@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: slim_api
+    volumes:
+      - ./:/var/www
+    ports:
+      - "8080:80"
+    environment:
+      - PHP_DISPLAY_ERRORS=On
+      - PHP_MEMORY_LIMIT=512M
+      - DATABASE_URL=sqlite:/var/www/database.sqlite
+    restart: always
+
