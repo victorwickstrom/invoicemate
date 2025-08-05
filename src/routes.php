@@ -22,9 +22,9 @@ return function (App $app) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-    // Ladda in faktura-rutterna
-    $invoiceRoutes = require __DIR__ . '/invoiceRoutes.php';
-    $invoiceRoutes($app);
+        // Ladda in faktura-rutterna via PSR-kompatibel definierare
+        $invoiceRoutes = require __DIR__ . '/Routes/InvoiceRoutes.php';
+        $invoiceRoutes($app);
 
      // Ladda in accounting-years-rutterna
     $accountingYearsRoutes = require __DIR__ . '/accountingYearsRoutes.php';
@@ -91,5 +91,8 @@ return function (App $app) {
 
     $vatRoutes = require __DIR__ . '/vatRoutes.php';
     $vatRoutes($app);
+
+        // Lägg till global JSON-felhanterare
+        $app->add($container->get(\App\Middleware\JsonErrorMiddleware::class));
 
 };
