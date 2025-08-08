@@ -22,8 +22,9 @@ return function (App $app) {
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-        // Ladda in faktura-rutterna via PSR-kompatibel definierare
-        $invoiceRoutes = require __DIR__ . '/Routes/InvoiceRoutes.php';
+        // Ladda in faktura-rutterna via traditionell funktion
+        // Använd den befintliga invoiceRoutes.php istället för den nya PSR-baserade klassen
+        $invoiceRoutes = require __DIR__ . '/invoiceRoutes.php';
         $invoiceRoutes($app);
 
      // Ladda in accounting-years-rutterna

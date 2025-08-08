@@ -1,11 +1,11 @@
 <?php
 declare(strict_types=1);
 
-namespace App\Services;
+namespace App;
 
 /**
- * AuthService is responsible for validating incoming JWT/Bearer tokens against a
- * central authentication provider (e.g. a Drupal instance).  It exposes a
+ * AuthService is responsible for validating incoming JWT/Bearer tokens against
+ * a central authentication provider (e.g. a Drupal instance).  It exposes a
  * single method, validateToken(), which returns user details on success or
  * null on failure.  The concrete implementation here is intentionally simple
  * and designed for extension: in a production environment you would perform a
@@ -31,15 +31,12 @@ class AuthService
     public function validateToken(string $token): ?array
     {
         // Basic example: accept a single hard‑coded token.  Replace this logic
-        // with a call to your Drupal authentication API.  For example:
-        // $client = new \GuzzleHttp\Client(['base_uri' => 'https://auth.example.com']);
-        // $response = $client->post('/validate', ['headers' => ['Authorization' => "Bearer {$token}"]]);
-        // if ($response->getStatusCode() === 200) { return json_decode($response->getBody()->getContents(), true); }
+        // with a call to your authentication API.
         if ($token === 'test') {
             return [
-                'user_id'   => 1,
-                'username'  => 'testuser',
-                'roles'     => ['admin'],
+                'user_id'  => 1,
+                'username' => 'testuser',
+                'roles'    => ['admin'],
             ];
         }
 

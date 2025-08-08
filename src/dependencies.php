@@ -14,25 +14,18 @@ return function (Container $container) {
         });
 
         // AuthService used by JwtAuthMiddleware
-        $container->set(\App\Services\AuthService::class, function () {
-            return new \App\Services\AuthService();
+        $container->set(\App\AuthService::class, function () {
+            return new \App\AuthService();
         });
 
-        // InvoiceService depends on PDO
-        $container->set(\App\Services\InvoiceService::class, function () use ($container) {
-            return new \App\Services\InvoiceService($container->get('db'));
-        });
-
-        // Validator for invoices
-        $container->set(\App\Validators\InvoiceValidator::class, function () {
-            return new \App\Validators\InvoiceValidator();
-        });
+        // Vi registrerar inte längre InvoiceService eller InvoiceValidator i containern
+        // eftersom fakturalogiken ligger direkt i invoiceRoutes.php och inte i separata klasser.
 
         // JWT authentication middleware.  We register it as a service so it can
         // be easily injected into route groups.  Aliasing under the key
         // 'auth' allows backwards compatibility with the previous AuthMiddleware.
         $container->set('auth', function () use ($container) {
-            $authService = $container->get(\App\Services\AuthService::class);
+            $authService = $container->get(\App\AuthService::class);
             return new \App\Middleware\JwtAuthMiddleware($authService);
         });
 
