@@ -1,38 +1,38 @@
+# TODO
 
-# ✅ Invoicemate – TODO för efterlevnad av dansk bokföringslag
+This file lists remaining tasks to make Invoicemate fully compliant with the Danish Bookkeeping Act and the SAF‑T standard.
 
-## ✅ Redan uppfyllt
-- [x] Bokföring av transaktioner (kontoplan, verifikationer, huvudbok)
-- [x] Digitala bilagor med koppling till verifikationer
-- [x] Momsregistrering på radnivå (inkl. momsberäkning)
-- [x] Betalningsregistrering (kund/leverantör)
-- [x] Grundläggande transaktionsspår (GUID, verifikatnummer)
-- [x] SAF-T import
+## Remaining tasks
 
----
+### Verifikationer & spårbarhet
 
-## 🧩 Kvar att göra
+- [ ] Automatisk tilldelning av verifikationsnummer för manuala verifikationer, inköpsverifikationer och fakturor. Säkerställ sekventiella nummer utan avbrott.
+- [ ] Validera att varje verifikation balanserar (debet = kredit) innan den bokförs.
 
-### 📄 Verifikationer & spårbarhet
-- [ ] Automatisk verifikationsnummer-tilldelning
-- [ ] Transaktionsbalanskontroll (debet = kredit)
+### Dataintegritet och säkerhet
 
-### 🔐 Dataintegritet & säkerhet
-- [ ] Implementera ändringslogg (audit trail)
-- [ ] Inför användar- och rollhantering
-- [ ] Stöd för periodlåsning (t.ex. låsta räkenskapsår)
+- [ ] Implementera en ändringslogg (audit trail) som loggar alla ändringar (INSERT/UPDATE/DELETE) i relevanta tabeller, inklusive vem som gjort ändringen och när.
+- [ ] Införa användar- och rollhantering så att åtkomst till bokföringsdata styrs enligt behörighet.
+- [ ] Införa stöd för periodlåsning så att bokslut eller låsta perioder inte kan ändras.
 
-### ☁️ Backup och dataskydd
-- [ ] Backup-rutin för SQLite-databas
-- [ ] Backup av bilagor (uploads/)
-- [ ] Kryptering och filskydd
+### Backup och dataskydd
 
-### 📤 SAF-T export (krav enligt lagen)
-- [ ] Fullständig SAF-T-exportfunktion (XML enligt Erhvervsstyrelsen)
-- [ ] Validera SAF-T-fil mot XSD
-- [ ] Låt användare generera SAF-T per räkenskapsår
+- [ ] Upprätta automatiska backup‑rutiner för SQLite‑databasen.
+- [ ] Säkerhetskopiera bilagor (uploads/) regelbundet, gärna till en separat lagringslösning.
+- [ ] Implementera kryptering eller annan filskyddsmekanism för känsliga filer och data.
 
-### 📊 Valfria förbättringar (bör-krav)
-- [ ] Automatisk PDF-arkivering av utställda fakturor
-- [ ] Momsrapport (summering in-/utgående moms)
-- [ ] Kontroll att alla bokförda poster har bilaga
+### SAF‑T‑export
+
+- [ ] Implementera fullständig SAF‑T‑export enligt Erhvervsstyrelsens specifikation. Exporten ska inkludera:
+  - Header med företagsuppgifter.
+  - MasterFiles: kontoplan (GeneralLedgerAccounts), kunder och leverantörer (Customer/Supplier), momskoder (VAT codes) och eventuellt artikelregister.
+  - GeneralLedgerEntries: alla bokföringsposter för vald period med journaler, transaktioner och rader.
+  - SourceDocuments: försäljningsfakturor, inköpsfakturor och betalningar, om det krävs i specifikationen.
+- [ ] Validera SAF‑T‑filen mot det officiella XSD‑schemat innan den levereras.
+- [ ] Tillhandahåll testfiler och automatisk generering av SAF‑T‑filer per räkenskapsår eller valfri period.
+
+### Valfria förbättringar
+
+- [ ] Automatisk arkivering av PDF‑versioner av utställda fakturor som bilagor.
+- [ ] Implementera momsrapporter som sammanställer in‑ och utgående moms per period.
+- [ ] Kontrollera att alla bokförda poster alltid har kopplade bilagor när så krävs.
