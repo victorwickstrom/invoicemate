@@ -129,6 +129,11 @@ function createInvoice(Request $request, Response $response, array $args, Contai
 
     $pdo = $container->get('db');
 
+    // Determine next invoice number for organization to ensure sequential numbers
+    $stmtNum = $pdo->prepare("SELECT COALESCE(MAX(\"number\"), 0) + 1 AS next_number FROM invoice WHERE organization_id = :orgId");
+    $stmtNum->execute([':orgId' => $args['organizationId']]);
+    $nextInvoiceNumber = (int) $stmtNum->fetchColumn();
+
     $stmt = $pdo->prepare("INSERT INTO invoice (guid, organization_id, currency, language, external_reference, description, comment, invoice_date, address, number, contact_name, show_lines_incl_vat, total_excl_vat, total_vatable_amount, total_incl_vat, total_non_vatable_amount, total_vat, invoice_template_id, status, contact_guid, payment_condition_number_of_days, payment_condition_type, reminder_fee, reminder_interest_rate, is_mobile_pay_invoice_enabled, is_penso_pay_enabled)
                             VALUES (:guid, :organization_id, :currency, :language, :external_reference, :description, :comment, :invoice_date, :address, :number, :contact_name, :show_lines_incl_vat, :total_excl_vat, :total_vatable_amount, :total_incl_vat, :total_non_vatable_amount, :total_vat, :invoice_template_id, 'Draft', :contact_guid, :payment_condition_number_of_days, :payment_condition_type, :reminder_fee, :reminder_interest_rate, :is_mobile_pay_invoice_enabled, :is_penso_pay_enabled)");
 
@@ -142,7 +147,7 @@ function createInvoice(Request $request, Response $response, array $args, Contai
         'comment' => $data['comment'] ?? null,
         'invoice_date' => $data['date'] ?? date('Y-m-d'),
         'address' => $data['address'] ?? null,
-        'number' => rand(1000,9999), // Generera nummer på annat sätt enligt ditt system
+        'number' => $nextInvoiceNumber,
         'contact_name' => $data['contactName'] ?? null,
         'show_lines_incl_vat' => $data['showLinesInclVat'] ? 1 : 0,
         'total_excl_vat' => 0,
@@ -156,7 +161,6 @@ function createInvoice(Request $request, Response $response, array $args, Contai
         'payment_condition_type' => $data['paymentConditionType'] ?? 'Netto',
         'reminder_fee' => $data['reminderFee'] ?? 0,
         'reminder_interest_rate' => $data['reminderInterestRate'] ?? 0,
-        'total_vatable_amount' => 0,
         'is_mobile_pay_invoice_enabled' => $data['isMobilePayInvoiceEnabled'] ? 1 : 0,
         'is_penso_pay_enabled' => $data['isPensoPayEnabled'] ? 1 : 0
     ]);

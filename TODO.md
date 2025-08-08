@@ -6,7 +6,11 @@ This file lists remaining tasks to make Invoicemate fully compliant with the Dan
 
 ### Verifikationer & spårbarhet
 
-- [ ] Automatisk tilldelning av verifikationsnummer för manuala verifikationer, inköpsverifikationer och fakturor. Säkerställ sekventiella nummer utan avbrott.
+*Delvis klart:* sekventiell numrering har implementerats för manuella verifikationer och kundfakturor.
+*Återstår:* Inköpsverifikationer saknar fortfarande ett löpnummerfält i databasschemat och behöver en separat implementation.
+
+- [x] Automatisk tilldelning av verifikationsnummer för manuala verifikationer och kundfakturor.
+- [ ] Inför numrering för inköpsverifikationer och säkerställ sekventiella nummer utan avbrott.
 - [ ] Validera att varje verifikation balanserar (debet = kredit) innan den bokförs.
 
 ### Dataintegritet och säkerhet

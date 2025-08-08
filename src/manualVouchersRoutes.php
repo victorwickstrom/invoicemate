@@ -100,14 +100,36 @@ return function (App $app) {
             return $response->withStatus(400)->withJson(["error" => "Timestamp required for booking"]);
         }
 
-        $stmt = $pdo->prepare("UPDATE manual_voucher SET status = 'Booked', booking_time = :bookingTime WHERE organization_id = :organizationId AND guid = :guid");
+        // Fetch current voucher to check existing number and status
+        $stmt = $pdo->prepare("SELECT voucher_number, status FROM manual_voucher WHERE organization_id = :organizationId AND guid = :guid");
         $stmt->execute([
-            ':bookingTime' => date("Y-m-d H:i:s"),
+            ':organizationId' => $organizationId,
+            ':guid' => $guid
+        ]);
+        $currentVoucher = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$currentVoucher) {
+            return $response->withStatus(404)->withJson(['error' => 'Manual voucher not found']);
+        }
+        // Determine next voucher number if not already set
+        $voucherNumber = $currentVoucher['voucher_number'];
+        if (!$voucherNumber) {
+            $stmtNext = $pdo->prepare("SELECT COALESCE(MAX(voucher_number), 0) + 1 AS next_number FROM manual_voucher WHERE organization_id = :orgId");
+            $stmtNext->execute([':orgId' => $organizationId]);
+            $voucherNumber = (int) $stmtNext->fetchColumn();
+        }
+        // Update voucher with booking time, number and status
+        $stmt = $pdo->prepare("UPDATE manual_voucher SET status = 'Booked', booking_time = :bookingTime, voucher_number = :voucherNumber WHERE organization_id = :organizationId AND guid = :guid");
+        $stmt->execute([
+            ':bookingTime' => date('Y-m-d H:i:s'),
+            ':voucherNumber' => $voucherNumber,
             ':organizationId' => $organizationId,
             ':guid' => $guid
         ]);
 
-        return $response->withStatus(200)->withJson(["message" => "Manual voucher booked successfully"]);
+        return $response->withStatus(200)->withJson([
+            'message' => 'Manual voucher booked successfully',
+            'voucherNumber' => $voucherNumber
+        ]);
     });
 
     // Ta bort en manuell verifikation
