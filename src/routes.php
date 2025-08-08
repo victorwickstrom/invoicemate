@@ -97,6 +97,10 @@ return function (App $app) {
     $saftImportRoutes = require __DIR__ . '/saftImportRoutes.php';
     $saftImportRoutes($app);
 
+    // Ladda rutter för SAF‑T export
+    $saftExportRoutes = require __DIR__ . '/saftExportRoutes.php';
+    $saftExportRoutes($app);
+
         // Lägg till global JSON-felhanterare
         $app->add($container->get(\App\Middleware\JsonErrorMiddleware::class));
 

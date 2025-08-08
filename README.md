@@ -43,10 +43,11 @@ sqlite3 database.sqlite < migrations/2025_08_05_audit_log.sql
 
 ```
 src/
-├── Middleware/          # JWT-autentisering
+├── Middleware/          # JWT‑autentisering
 ├── invoiceRoutes.php    # Fakturaendpoints
-├── dependencies.php     # DI-tjänster
+├── dependencies.php     # DI‑tjänster
 └── routes.php           # Routing och middleware
+```
 
 ### 📥 SAF‑T‑import
 
@@ -68,6 +69,32 @@ Exempel:
 curl -F "file=@/sökväg/till/saft.xml" http://localhost:8080/v1/123/saft/import
 ```
 
-migrations/
-└── 2025_08_05_audit_log.sql
+### 📤 SAF‑T‑export
+
+Det finns även stöd för att exportera bokföringsdata i SAF‑T‑format. Endpoints låter dig hämta en XML‑fil med kontoplan, journalposter och kontakter för en organisation:
+
+```
+GET /v1/{organizationId}/saft/export
+```
+
+Valfria query‑parametrar:
+
+- **from**: Startdatum i formatet `YYYY-MM-DD`.
+- **to**: Slutdatum i formatet `YYYY-MM-DD`.
+
+Om du anger `from` och/eller `to` filtreras exporterade poster till att endast omfatta det angivna datumintervallet. API:et bygger en SAF‑T‑fil och returnerar den som en nedladdningsbar bilaga.
+
+Exempel:
+
+```bash
+# Ladda ner SAF‑T‑fil för hela året 2024
+curl -o saft.xml "http://localhost:8080/v1/123/saft/export?from=2024-01-01&to=2024-12-31"
+```
+
+## 📁 Migrations
+
+Ytterligare tabeller finns i `migrations/`. Exempelvis skapas en revisionsloggtabell med:
+
+```bash
+sqlite3 database.sqlite < migrations/2025_08_05_audit_log.sql
 ```
