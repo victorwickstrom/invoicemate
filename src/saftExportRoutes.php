@@ -124,10 +124,19 @@ function exportSaft(Request $request, Response $response, array $args, Container
         $header->addChild('AuditFileVersion', '1.0');
         $header->addChild('AuditFileCountry', 'DK');
         $header->addChild('AuditFileDateCreated', date('Y-m-d'));
-        // Company details placeholder (could be extended with real data)
+        // Fetch company details from organizations table
+        $stmtOrg = $pdo->prepare('SELECT vat_number, name, street, city, zip_code, country_key FROM organizations WHERE id = :id');
+        $stmtOrg->execute([':id' => $organizationId]);
+        $org = $stmtOrg->fetch(PDO::FETCH_ASSOC);
         $company = $header->addChild('Company');
-        $company->addChild('RegistrationNumber', '');
-        $company->addChild('Name', '');
+        $company->addChild('RegistrationNumber', htmlspecialchars($org['vat_number'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+        $company->addChild('Name', htmlspecialchars($org['name'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+        // Optional company address
+        $companyAddress = $company->addChild('CompanyAddress');
+        $companyAddress->addChild('StreetName', htmlspecialchars($org['street'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+        $companyAddress->addChild('City', htmlspecialchars($org['city'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+        $companyAddress->addChild('PostalCode', htmlspecialchars($org['zip_code'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+        $companyAddress->addChild('Country', htmlspecialchars($org['country_key'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
         // Selection criteria (period covered)
         $selection = $header->addChild('SelectionCriteria');
         if ($fromDate) {
@@ -144,7 +153,6 @@ function exportSaft(Request $request, Response $response, array $args, Container
         foreach ($accounts as $acc) {
             $accNode = $glAccounts->addChild('Account');
             $accNode->addChild('AccountID', (string) $acc['accountNumber']);
-            // Use AccountDescription as described in Danish SAF‑T standard
             $accNode->addChild('AccountDescription', htmlspecialchars($acc['name'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
             if (!empty($acc['vatCode'])) {
                 $accNode->addChild('VATCode', htmlspecialchars($acc['vatCode'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
@@ -172,35 +180,220 @@ function exportSaft(Request $request, Response $response, array $args, Container
             $addressNode->addChild('PostalCode', htmlspecialchars($contact['zip_code'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
             $addressNode->addChild('Country', htmlspecialchars($contact['country_key'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
         }
+        // VAT Tax table
+        $stmtVat = $pdo->prepare('SELECT vat_code, vat_rate FROM vat_type');
+        $stmtVat->execute();
+        $vatTypes = $stmtVat->fetchAll(PDO::FETCH_ASSOC);
+        if ($vatTypes) {
+            $taxTable = $master->addChild('TaxTable');
+            foreach ($vatTypes as $vt) {
+                $taxCode = $taxTable->addChild('TaxCode');
+                $taxCode->addChild('TaxCodeID', htmlspecialchars($vt['vat_code'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                $taxCode->addChild('Description', htmlspecialchars($vt['vat_code'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                $taxCode->addChild('TaxType', 'VAT');
+                $taxCode->addChild('TaxPercentage', number_format((float) $vt['vat_rate'], 2, '.', ''));
+            }
+        }
 
         // Build ledger entries
         $glEntries = $xml->addChild('GeneralLedgerEntries');
-        // We'll create a single journal for all transactions
+        // Create a single journal for all transactions
         $journal = $glEntries->addChild('Journal');
         $journal->addChild('JournalID', '1');
+        // Group entries by voucher_number (or entry_guid if voucher_number null)
+        $entryGroups = [];
         foreach ($entries as $entry) {
+            $transId = $entry['voucher_number'] ?? $entry['entry_guid'];
+            if (!isset($entryGroups[$transId])) {
+                $entryGroups[$transId] = [];
+            }
+            $entryGroups[$transId][] = $entry;
+        }
+        foreach ($entryGroups as $transId => $group) {
             $transaction = $journal->addChild('Transaction');
-            // Use voucher number or entry GUID as TransactionID
-            $transId = isset($entry['voucher_number']) && $entry['voucher_number'] !== null ? $entry['voucher_number'] : $entry['entry_guid'];
             $transaction->addChild('TransactionID', htmlspecialchars((string) $transId, ENT_XML1 | ENT_QUOTES, 'UTF-8'));
-            if (!empty($entry['entry_date'])) {
-                $transaction->addChild('TransactionDate', htmlspecialchars($entry['entry_date'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            // Use date from first entry as transaction date
+            $firstEntry = $group[0];
+            if (!empty($firstEntry['entry_date'])) {
+                $transaction->addChild('TransactionDate', htmlspecialchars($firstEntry['entry_date'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
             }
-            if (!empty($entry['description'])) {
-                $transaction->addChild('Description', htmlspecialchars($entry['description'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            // Use description from first entry as transaction description
+            if (!empty($firstEntry['description'])) {
+                $transaction->addChild('Description', htmlspecialchars($firstEntry['description'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
             }
-            // Add single line per entry
-            $line = $transaction->addChild('Line');
-            $line->addChild('RecordID', htmlspecialchars($entry['entry_guid'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
-            $line->addChild('AccountID', htmlspecialchars((string) $entry['account_number'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
-            if (!empty($entry['description'])) {
-                $line->addChild('Description', htmlspecialchars($entry['description'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            foreach ($group as $entry) {
+                $line = $transaction->addChild('Line');
+                $line->addChild('RecordID', htmlspecialchars($entry['entry_guid'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                $line->addChild('AccountID', htmlspecialchars((string) $entry['account_number'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                if (!empty($entry['description'])) {
+                    $line->addChild('Description', htmlspecialchars($entry['description'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                }
+                $amount = (float) $entry['amount'];
+                if ($amount >= 0) {
+                    $line->addChild('DebitAmount', number_format($amount, 2, '.', ''));
+                } else {
+                    $line->addChild('CreditAmount', number_format(abs($amount), 2, '.', ''));
+                }
             }
-            $amount = (float) $entry['amount'];
-            if ($amount >= 0) {
-                $line->addChild('DebitAmount', number_format($amount, 2, '.', ''));
-            } else {
-                $line->addChild('CreditAmount', number_format(abs($amount), 2, '.', ''));
+        }
+
+        /**
+         * SourceDocuments section: include SalesInvoices, PurchaseInvoices and Payments
+         * The Danish SAF-T specification requires the listing of source documents that
+         * correspond to the transactions in the general ledger. We gather
+         * invoices, purchase vouchers and payments within the selected period
+         * (if any) and append them under the SourceDocuments element.
+         */
+        $sourceDocs = $xml->addChild('SourceDocuments');
+        // SalesInvoices
+        $salesInvoicesNode = $sourceDocs->addChild('SalesInvoices');
+        // Fetch invoices within date range
+        $sqlInv = 'SELECT * FROM invoice WHERE organization_id = :orgId AND deleted_at IS NULL';
+        $invParams = [':orgId' => $organizationId];
+        if ($fromDate) {
+            $sqlInv .= ' AND invoice_date >= :fromDate';
+            $invParams[':fromDate'] = $fromDate;
+        }
+        if ($toDate) {
+            $sqlInv .= ' AND invoice_date <= :toDate';
+            $invParams[':toDate'] = $toDate;
+        }
+        $stmtInv = $pdo->prepare($sqlInv);
+        $stmtInv->execute($invParams);
+        $invoicesList = $stmtInv->fetchAll(PDO::FETCH_ASSOC);
+        if ($invoicesList) {
+            foreach ($invoicesList as $inv) {
+                $invNode = $salesInvoicesNode->addChild('Invoice');
+                // InvoiceNo and type
+                $invNode->addChild('InvoiceNo', htmlspecialchars((string) $inv['number'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                $invNode->addChild('InvoiceDate', htmlspecialchars($inv['invoice_date'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                $invNode->addChild('InvoiceType', 'FT');
+                // CustomerID: link to contact
+                $custId = $inv['contact_guid'] ?? '';
+                $invNode->addChild('CustomerID', htmlspecialchars((string) $custId, ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                // Lines
+                $linesNode = $invNode->addChild('LineItems');
+                // Fetch invoice lines
+                $stmtLine = $pdo->prepare('SELECT * FROM invoice_lines WHERE invoice_guid = :guid');
+                $stmtLine->execute([':guid' => $inv['guid']]);
+                $linesData = $stmtLine->fetchAll(PDO::FETCH_ASSOC);
+                $lineNumber = 1;
+                foreach ($linesData as $line) {
+                    $lineNode = $linesNode->addChild('Line');
+                    $lineNode->addChild('LineNumber', $lineNumber++);
+                    $lineNode->addChild('Description', htmlspecialchars($line['description'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                    // Use account_number as ProductCode for simplicity
+                    $lineNode->addChild('ProductCode', htmlspecialchars((string) ($line['account_number'] ?? ''), ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                    $lineNode->addChild('Quantity', number_format((float) ($line['quantity'] ?? 1), 2, '.', ''));
+                    $unitPrice = isset($line['unit_price']) ? (float) $line['unit_price'] : 0;
+                    $lineNode->addChild('UnitPrice', number_format($unitPrice, 2, '.', ''));
+                    // Tax details
+                    $vatRate = isset($line['vat_rate']) ? (float) $line['vat_rate'] : 0;
+                    $taxNode = $lineNode->addChild('Tax');
+                    if ($vatRate > 0) {
+                        $taxNode->addChild('TaxType', 'VAT');
+                        $taxNode->addChild('TaxPercentage', number_format($vatRate * 100, 2, '.', ''));
+                    } else {
+                        $taxNode->addChild('TaxType', 'None');
+                        $taxNode->addChild('TaxPercentage', '0.00');
+                    }
+                    // Line totals: net and gross
+                    $netAmount = isset($line['total_amount']) ? (float) $line['total_amount'] : 0;
+                    $grossAmount = isset($line['total_amount_incl_vat']) ? (float) $line['total_amount_incl_vat'] : $netAmount;
+                    $lineNode->addChild('UnitPriceGross', number_format($grossAmount, 2, '.', ''));
+                    $lineNode->addChild('CreditAmount', number_format($grossAmount, 2, '.', ''));
+                }
+                // Document totals
+                $docTotals = $invNode->addChild('DocumentTotals');
+                $docTotals->addChild('TaxPayable', number_format((float) ($inv['total_vat'] ?? 0), 2, '.', ''));
+                $docTotals->addChild('NetTotal', number_format((float) ($inv['total_excl_vat'] ?? 0), 2, '.', ''));
+                $docTotals->addChild('GrossTotal', number_format((float) ($inv['total_incl_vat'] ?? 0), 2, '.', ''));
+            }
+        }
+        // PurchaseInvoices
+        $purchaseInvoicesNode = $sourceDocs->addChild('PurchaseInvoices');
+        $sqlPV = 'SELECT * FROM purchase_voucher WHERE 1=1';
+        $pvParams = [];
+        if ($fromDate) {
+            $sqlPV .= ' AND voucher_date >= :pvFrom';
+            $pvParams[':pvFrom'] = $fromDate;
+        }
+        if ($toDate) {
+            $sqlPV .= ' AND voucher_date <= :pvTo';
+            $pvParams[':pvTo'] = $toDate;
+        }
+        $stmtPV = $pdo->prepare($sqlPV);
+        $stmtPV->execute($pvParams);
+        $purchaseVouchers = $stmtPV->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($purchaseVouchers as $pv) {
+            $piNode = $purchaseInvoicesNode->addChild('Invoice');
+            $piNode->addChild('InvoiceNo', htmlspecialchars((string) ($pv['voucher_number'] ?? ''), ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            $piNode->addChild('InvoiceDate', htmlspecialchars($pv['voucher_date'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            $piNode->addChild('InvoiceType', 'PE');
+            $supplierId = $pv['contact_guid'] ?? '';
+            $piNode->addChild('SupplierID', htmlspecialchars((string) $supplierId, ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            // Lines from purchase_voucher_line
+            $lineItems = $pdo->prepare('SELECT * FROM purchase_voucher_line WHERE purchase_voucher_guid = :guid');
+            $lineItems->execute([':guid' => $pv['guid']]);
+            $linesData = $lineItems->fetchAll(PDO::FETCH_ASSOC);
+            $linesNode = $piNode->addChild('LineItems');
+            $lnr = 1;
+            foreach ($linesData as $line) {
+                $lineNode = $linesNode->addChild('Line');
+                $lineNode->addChild('LineNumber', $lnr++);
+                $lineNode->addChild('Description', htmlspecialchars($line['description'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                // Use account_number as ProductCode
+                $lineNode->addChild('ProductCode', htmlspecialchars((string) ($line['account_number'] ?? ''), ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+                $lineNode->addChild('Quantity', number_format((float) ($line['quantity'] ?? 1), 2, '.', ''));
+                $unitPrice = (float) ($line['base_amount_value'] ?? 0);
+                $lineNode->addChild('UnitPrice', number_format($unitPrice, 2, '.', ''));
+                $vatRate = (float) ($line['vat_rate'] ?? 0);
+                $taxNode = $lineNode->addChild('Tax');
+                if ($vatRate > 0) {
+                    $taxNode->addChild('TaxType', 'VAT');
+                    $taxNode->addChild('TaxPercentage', number_format($vatRate * 100, 2, '.', ''));
+                } else {
+                    $taxNode->addChild('TaxType', 'None');
+                    $taxNode->addChild('TaxPercentage', '0.00');
+                }
+                $grossAmount = (float) ($line['total_amount_incl_vat'] ?? ($line['base_amount_value_incl_vat'] ?? 0));
+                $lineNode->addChild('UnitPriceGross', number_format($grossAmount, 2, '.', ''));
+                // Purchase invoice: treat as debit (positive) amount
+                $lineNode->addChild('DebitAmount', number_format($grossAmount, 2, '.', ''));
+            }
+            // Document totals
+            $docTotals = $piNode->addChild('DocumentTotals');
+            $docTotals->addChild('TaxPayable', number_format((float) ($pv['total_vat'] ?? 0), 2, '.', ''));
+            $docTotals->addChild('NetTotal', number_format((float) ($pv['total_amount'] ?? 0), 2, '.', ''));
+            $docTotals->addChild('GrossTotal', number_format((float) ($pv['total_amount_incl_vat'] ?? 0), 2, '.', ''));
+        }
+        // Payments
+        $paymentsNode = $sourceDocs->addChild('Payments');
+        // Payments only relate to invoices
+        $sqlPay = 'SELECT * FROM payments WHERE 1=1';
+        $payParams = [];
+        if ($fromDate) {
+            $sqlPay .= ' AND payment_date >= :payFrom';
+            $payParams[':payFrom'] = $fromDate;
+        }
+        if ($toDate) {
+            $sqlPay .= ' AND payment_date <= :payTo';
+            $payParams[':payTo'] = $toDate;
+        }
+        $stmtPay = $pdo->prepare($sqlPay);
+        $stmtPay->execute($payParams);
+        $payments = $stmtPay->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($payments as $payment) {
+            $payNode = $paymentsNode->addChild('Payment');
+            // Payment identification: use payment id
+            $payNode->addChild('PaymentID', htmlspecialchars((string) $payment['id'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            $payNode->addChild('PaymentDate', htmlspecialchars($payment['payment_date'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            // Reference invoice
+            $payNode->addChild('SourceDocumentID', htmlspecialchars($payment['invoice_guid'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            $payNode->addChild('Amount', number_format((float) $payment['payment_amount'], 2, '.', ''));
+            $payNode->addChild('PaymentMethod', htmlspecialchars($payment['payment_method'] ?? '', ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+            if (!empty($payment['comments'])) {
+                $payNode->addChild('Comments', htmlspecialchars($payment['comments'], ENT_XML1 | ENT_QUOTES, 'UTF-8'));
             }
         }
 

@@ -6,32 +6,30 @@ This file lists remaining tasks to make Invoicemate fully compliant with the Dan
 
 ### Verifikationer & spårbarhet
 
-*Delvis klart:* sekventiell numrering har implementerats för manuella verifikationer och kundfakturor.
-*Återstår:* Inköpsverifikationer saknar fortfarande ett löpnummerfält i databasschemat och behöver en separat implementation.
+*Klart:* Sekventiell numrering är nu implementerad för manuella verifikationer, kundfakturor **och inköpsverifikationer**. Bokningen tilldelar nästa lediga nummer vid bokföring.
 
-- [x] Automatisk tilldelning av verifikationsnummer för manuala verifikationer och kundfakturor.
-- [ ] Inför numrering för inköpsverifikationer och säkerställ sekventiella nummer utan avbrott.
-- [ ] Validera att varje verifikation balanserar (debet = kredit) innan den bokförs.
+- [x] Automatisk tilldelning av verifikationsnummer för manuala verifikationer, kundfakturor och inköpsverifikationer.
+- [x] Validera att varje verifikation balanserar (debet = kredit) innan den bokförs.
 
 ### Dataintegritet och säkerhet
 
-- [ ] Implementera en ändringslogg (audit trail) som loggar alla ändringar (INSERT/UPDATE/DELETE) i relevanta tabeller, inklusive vem som gjort ändringen och när.
-- [ ] Införa användar- och rollhantering så att åtkomst till bokföringsdata styrs enligt behörighet.
-- [ ] Införa stöd för periodlåsning så att bokslut eller låsta perioder inte kan ändras.
+*Pågående:* En enklare audit-logg skrivs vid bokning av fakturor, manuella- och inköpsverifikationer. Fullständig audit-trail för alla ändringar och användarspecifikation saknas fortfarande.
+
+- [ ] Implementera en fullständig ändringslogg (audit trail) som loggar alla INSERT/UPDATE/DELETE i relevanta tabeller.
+- [ ] Införa användar- och rollhantering med persistent `users`‑tabell och dynamiska roller.
+- [x] Införa stöd för periodlåsning så att bokslut eller låsta perioder inte kan ändras.
 
 ### Backup och dataskydd
 
-- [ ] Upprätta automatiska backup‑rutiner för SQLite‑databasen.
-- [ ] Säkerhetskopiera bilagor (uploads/) regelbundet, gärna till en separat lagringslösning.
+*Klart:* Backup‑rutter finns nu i API:t. En admin‑endpoint tillåter backup av databasen och uppladdade filer samt gallrar gamla backupper.
+
+- [x] Upprätta automatiska backup‑rutiner för SQLite‑databasen.
+- [x] Säkerhetskopiera bilagor (uploads/) regelbundet, gärna till en separat lagringslösning.
 - [ ] Implementera kryptering eller annan filskyddsmekanism för känsliga filer och data.
 
 ### SAF‑T‑export
 
-- [ ] Implementera fullständig SAF‑T‑export enligt Erhvervsstyrelsens specifikation. Exporten ska inkludera:
-  - Header med företagsuppgifter.
-  - MasterFiles: kontoplan (GeneralLedgerAccounts), kunder och leverantörer (Customer/Supplier), momskoder (VAT codes) och eventuellt artikelregister.
-  - GeneralLedgerEntries: alla bokföringsposter för vald period med journaler, transaktioner och rader.
-  - SourceDocuments: försäljningsfakturor, inköpsfakturor och betalningar, om det krävs i specifikationen.
+- [x] Implementera fullständig SAF‑T‑export enligt Erhvervsstyrelsens specifikation (Header, MasterFiles inkl. momskoder, GeneralLedgerEntries och SourceDocuments (SalesInvoices, PurchaseInvoices, Payments) med periodfiltrering).
 - [ ] Validera SAF‑T‑filen mot det officiella XSD‑schemat innan den levereras.
 - [ ] Tillhandahåll testfiler och automatisk generering av SAF‑T‑filer per räkenskapsår eller valfri period.
 

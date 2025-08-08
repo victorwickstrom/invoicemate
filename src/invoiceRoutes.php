@@ -264,32 +264,152 @@ function updateInvoice(Request $request, Response $response, array $args, Contai
 function bookInvoice(Request $request, Response $response, array $args, ContainerInterface $container) {
     $pdo = $container->get('db');
 
+    $organizationId = $args['organizationId'];
+    $invoiceGuid     = $args['guid'];
+
+    // Role-based access control: only admin may book invoices
+    $user = $request->getAttribute('user');
+    $roles = $user['roles'] ?? [];
+    if (!in_array('admin', $roles)) {
+        $response->getBody()->write(json_encode(['error' => 'Forbidden: insufficient role']));
+        return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+    }
+
     // Kontrollera om fakturan existerar och inte redan är bokförd
-    $stmt = $pdo->prepare("SELECT status FROM invoice WHERE organization_id = :organizationId AND guid = :guid");
+    $stmt = $pdo->prepare("SELECT guid, number, status, invoice_date FROM invoice WHERE organization_id = :organizationId AND guid = :guid");
     $stmt->execute([
-        'organizationId' => $args['organizationId'],
-        'guid' => $args['guid']
+        'organizationId' => $organizationId,
+        'guid' => $invoiceGuid
     ]);
     $invoice = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$invoice) {
-        return $response->withStatus(404)->withHeader('Content-Type', 'application/json')
-            ->getBody()->write(json_encode(["error" => "Invoice not found"]));
+        $response->getBody()->write(json_encode(["error" => "Invoice not found"]));
+        return $response->withStatus(404)->withHeader('Content-Type', 'application/json');
     }
 
     if ($invoice['status'] !== 'Draft') {
-        return $response->withStatus(400)->withHeader('Content-Type', 'application/json')
-            ->getBody()->write(json_encode(["error" => "Only draft invoices can be booked"]));
+        $response->getBody()->write(json_encode(["error" => "Only draft invoices can be booked"]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
     }
 
-    // Uppdatera fakturans status till "Booked"
-    $stmt = $pdo->prepare("UPDATE invoice SET status = 'Booked', updated_at = CURRENT_TIMESTAMP WHERE organization_id = :organizationId AND guid = :guid");
-    $stmt->execute([
-        'organizationId' => $args['organizationId'],
-        'guid' => $args['guid']
+    // Kontrollera låst period (periodlåsning)
+    $invoiceDate = $invoice['invoice_date'];
+    if ($invoiceDate) {
+        // Ensure is_locked column exists in accounting_year
+        $columnsYear = [];
+        $stmtInfo = $pdo->query("PRAGMA table_info(accounting_year)");
+        $infoRows = $stmtInfo->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($infoRows as $col) {
+            $columnsYear[] = $col['name'];
+        }
+        if (!in_array('is_locked', $columnsYear)) {
+            $pdo->exec('ALTER TABLE accounting_year ADD COLUMN is_locked INTEGER DEFAULT 0');
+        }
+        $stmtLocked = $pdo->prepare("SELECT COUNT(*) FROM accounting_year WHERE organization_id = :orgId AND is_locked = 1 AND from_date <= :date AND to_date >= :date");
+        $stmtLocked->execute([':orgId' => $organizationId, ':date' => $invoiceDate]);
+        $isLocked = (int) $stmtLocked->fetchColumn() > 0;
+        if ($isLocked) {
+            $response->getBody()->write(json_encode(["error" => 'Accounting period is locked for date ' . $invoiceDate]));
+            return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+        }
+    }
+
+    // Hämta alla rader för fakturan
+    $stmtLines = $pdo->prepare("SELECT account_number, description, total_amount, total_amount_incl_vat FROM invoice_lines WHERE invoice_guid = :guid");
+    $stmtLines->execute([':guid' => $invoiceGuid]);
+    $invoiceLines = $stmtLines->fetchAll(PDO::FETCH_ASSOC);
+    if (!$invoiceLines) {
+        $response->getBody()->write(json_encode(["error" => "Invoice has no lines to book"]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+    }
+
+    // Create journal entries for each line: debit accounts receivable (1100), credit revenue and VAT (2610)
+    $entries = [];
+    foreach ($invoiceLines as $line) {
+        $totalIncl = (float) $line['total_amount_incl_vat'];
+        $totalExcl = (float) $line['total_amount'];
+        $vatAmount = $totalIncl - $totalExcl;
+        // Debit accounts receivable (1100)
+        $entries[] = [
+            'account_number' => 1100,
+            'description' => 'Invoice ' . $invoice['number'] . ' ' . ($line['description'] ?? ''),
+            'amount' => $totalIncl
+        ];
+        // Credit revenue account
+        $entries[] = [
+            'account_number' => (int) $line['account_number'],
+            'description' => 'Invoice ' . $invoice['number'] . ' ' . ($line['description'] ?? ''),
+            'amount' => -$totalExcl
+        ];
+        // Credit VAT if applicable
+        if (abs($vatAmount) > 0.001) {
+            $entries[] = [
+                'account_number' => 2610,
+                'description' => 'VAT for invoice ' . $invoice['number'],
+                'amount' => -$vatAmount
+            ];
+        }
+    }
+    // Verify that entries balance
+    $sumEntries = 0.0;
+    foreach ($entries as $ent) {
+        $sumEntries += (float) $ent['amount'];
+    }
+    if (abs($sumEntries) > 0.001) {
+        // Not balanced
+        $response->getBody()->write(json_encode(["error" => "Invoice entries are not balanced", 'sum' => $sumEntries]));
+        return $response->withStatus(400)->withHeader('Content-Type', 'application/json');
+    }
+
+    // Begin transaction: update invoice status and insert entries
+    $pdo->beginTransaction();
+    try {
+        // Uppdatera fakturans status till "Booked"
+        $stmtUpd = $pdo->prepare("UPDATE invoice SET status = 'Booked', updated_at = CURRENT_TIMESTAMP WHERE organization_id = :organizationId AND guid = :guid");
+        $stmtUpd->execute([
+            'organizationId' => $organizationId,
+            'guid' => $invoiceGuid
+        ]);
+
+        // Insert journal entries
+        foreach ($entries as $ent) {
+            $entryGuid = uniqid('entry_', true);
+            $stmtEntry = $pdo->prepare('INSERT INTO entries (organization_id, account_number, account_name, entry_date, voucher_number, voucher_type, description, vat_type, vat_code, amount, entry_guid, contact_guid, entry_type) VALUES (:orgId, :accountNumber, NULL, :entryDate, :voucherNumber, :voucherType, :description, NULL, NULL, :amount, :entryGuid, NULL, :entryType)');
+            $stmtEntry->execute([
+                ':orgId' => $organizationId,
+                ':accountNumber' => $ent['account_number'],
+                ':entryDate' => $invoiceDate ?? date('Y-m-d'),
+                ':voucherNumber' => $invoice['number'],
+                ':voucherType' => 'Invoice',
+                ':description' => $ent['description'],
+                ':amount' => $ent['amount'],
+                ':entryGuid' => $entryGuid,
+                ':entryType' => 'Normal'
+            ]);
+        }
+
+        $pdo->commit();
+    } catch (\Throwable $e) {
+        $pdo->rollBack();
+        $response->getBody()->write(json_encode(["error" => 'Booking invoice failed', 'details' => $e->getMessage()]));
+        return $response->withStatus(500)->withHeader('Content-Type', 'application/json');
+    }
+
+    // Insert audit log
+    $user   = $request->getAttribute('user');
+    $userId = $user['user_id'] ?? null;
+    $logStmt = $pdo->prepare("INSERT INTO audit_log (organization_id, user_id, table_name, record_id, operation, changed_data) VALUES (:orgId, :userId, :tableName, :recordId, :operation, :changedData)");
+    $logStmt->execute([
+        ':orgId'       => $organizationId,
+        ':userId'      => $userId,
+        ':tableName'   => 'invoice',
+        ':recordId'    => $invoiceGuid,
+        ':operation'   => 'BOOK',
+        ':changedData' => json_encode($entries)
     ]);
 
-    $response->getBody()->write(json_encode(["guid" => $args['guid'], "message" => "Invoice booked"]));
+    $response->getBody()->write(json_encode(["guid" => $invoiceGuid, "message" => "Invoice booked", "voucherNumber" => $invoice['number']]));
     return $response->withHeader('Content-Type', 'application/json');
 }
 

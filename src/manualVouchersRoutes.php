@@ -95,6 +95,13 @@ return function (App $app) {
         $guid = $args['guid'];
         $data = $request->getParsedBody();
 
+        // Role-based access control: only admin may book vouchers
+        $user = $request->getAttribute('user');
+        $roles = $user['roles'] ?? [];
+        if (!in_array('admin', $roles)) {
+            return $response->withStatus(403)->withJson(['error' => 'Forbidden: insufficient role']);
+        }
+
         $timestamp = $data['timestamp'] ?? null;
         if (!$timestamp) {
             return $response->withStatus(400)->withJson(["error" => "Timestamp required for booking"]);
@@ -110,6 +117,45 @@ return function (App $app) {
         if (!$currentVoucher) {
             return $response->withStatus(404)->withJson(['error' => 'Manual voucher not found']);
         }
+        // Validate lines for balancing if provided
+        $lines = $data['lines'] ?? [];
+        if ($lines && is_array($lines)) {
+            $sum = 0.0;
+            foreach ($lines as $line) {
+                $amount = (float) ($line['amount'] ?? 0);
+                $sum += $amount;
+            }
+            if (abs($sum) > 0.001) {
+                return $response->withStatus(400)
+                    ->withJson([
+                        'error' => 'Voucher is not balanced. Sum of amounts must be zero.',
+                        'sum' => $sum
+                    ]);
+            }
+        }
+
+        // Check if period is locked
+        $voucherDate = $currentVoucher['voucher_date'] ?? null;
+        if ($voucherDate) {
+            // Ensure is_locked column exists in accounting_year
+            $columnsYear = [];
+            $stmtInfo = $pdo->query("PRAGMA table_info(accounting_year)");
+            $infoRows = $stmtInfo->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($infoRows as $col) {
+                $columnsYear[] = $col['name'];
+            }
+            if (!in_array('is_locked', $columnsYear)) {
+                $pdo->exec('ALTER TABLE accounting_year ADD COLUMN is_locked INTEGER DEFAULT 0');
+            }
+            // Check if voucher_date falls within a locked year
+            $stmtLocked = $pdo->prepare("SELECT COUNT(*) FROM accounting_year WHERE organization_id = :orgId AND is_locked = 1 AND from_date <= :date AND to_date >= :date");
+            $stmtLocked->execute([':orgId' => $organizationId, ':date' => $voucherDate]);
+            $isLocked = (int) $stmtLocked->fetchColumn() > 0;
+            if ($isLocked) {
+                return $response->withStatus(400)->withJson(['error' => 'Accounting period is locked for date ' . $voucherDate]);
+            }
+        }
+
         // Determine next voucher number if not already set
         $voucherNumber = $currentVoucher['voucher_number'];
         if (!$voucherNumber) {
@@ -117,17 +163,65 @@ return function (App $app) {
             $stmtNext->execute([':orgId' => $organizationId]);
             $voucherNumber = (int) $stmtNext->fetchColumn();
         }
-        // Update voucher with booking time, number and status
-        $stmt = $pdo->prepare("UPDATE manual_voucher SET status = 'Booked', booking_time = :bookingTime, voucher_number = :voucherNumber WHERE organization_id = :organizationId AND guid = :guid");
-        $stmt->execute([
-            ':bookingTime' => date('Y-m-d H:i:s'),
-            ':voucherNumber' => $voucherNumber,
-            ':organizationId' => $organizationId,
-            ':guid' => $guid
+        // Begin transaction: update voucher and insert entries
+        $pdo->beginTransaction();
+        try {
+            // Update voucher with booking time, number and status
+            $stmt = $pdo->prepare("UPDATE manual_voucher SET status = 'Booked', booking_time = :bookingTime, voucher_number = :voucherNumber WHERE organization_id = :organizationId AND guid = :guid");
+            $stmt->execute([
+                ':bookingTime' => date('Y-m-d H:i:s'),
+                ':voucherNumber' => $voucherNumber,
+                ':organizationId' => $organizationId,
+                ':guid' => $guid
+            ]);
+
+            // Insert journal entries if lines provided
+            if ($lines && is_array($lines)) {
+                foreach ($lines as $line) {
+                    $accNumber = (int) ($line['accountNumber'] ?? 0);
+                    $description = $line['description'] ?? '';
+                    $amount = (float) ($line['amount'] ?? 0);
+                    $entryGuid = uniqid('entry_', true);
+                    $stmtEntry = $pdo->prepare('INSERT INTO entries (organization_id, account_number, account_name, entry_date, voucher_number, voucher_type, description, vat_type, vat_code, amount, entry_guid, contact_guid, entry_type) VALUES (:orgId, :accountNumber, NULL, :entryDate, :voucherNumber, :voucherType, :description, NULL, NULL, :amount, :entryGuid, NULL, :entryType)');
+                    $stmtEntry->execute([
+                        ':orgId' => $organizationId,
+                        ':accountNumber' => $accNumber,
+                        ':entryDate' => date('Y-m-d'),
+                        ':voucherNumber' => $voucherNumber,
+                        ':voucherType' => 'ManualVoucher',
+                        ':description' => $description,
+                        ':amount' => $amount,
+                        ':entryGuid' => $entryGuid,
+                        ':entryType' => 'Normal'
+                    ]);
+                }
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            return $response->withStatus(500)
+                ->withJson([
+                    'error' => 'Booking failed',
+                    'details' => $e->getMessage()
+                ]);
+        }
+
+        // Insert audit log before returning
+        $user   = $request->getAttribute('user');
+        $userId = $user['user_id'] ?? null;
+        $logStmt = $pdo->prepare("INSERT INTO audit_log (organization_id, user_id, table_name, record_id, operation, changed_data) VALUES (:orgId, :userId, :tableName, :recordId, :operation, :changedData)");
+        $logStmt->execute([
+            ':orgId'       => $organizationId,
+            ':userId'      => $userId,
+            ':tableName'   => 'manual_voucher',
+            ':recordId'    => $guid,
+            ':operation'   => 'BOOK',
+            ':changedData' => json_encode($lines),
         ]);
 
         return $response->withStatus(200)->withJson([
-            'message' => 'Manual voucher booked successfully',
+            'message'       => 'Manual voucher booked successfully',
             'voucherNumber' => $voucherNumber
         ]);
     });
