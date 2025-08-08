@@ -48,6 +48,26 @@ src/
 ├── dependencies.php     # DI-tjänster
 └── routes.php           # Routing och middleware
 
+### 📥 SAF‑T‑import
+
+Det finns nu stöd för att importera bokföringsdata i SAF‑T‑format. Du kan posta en XML‑fil via ett nytt endpoint:
+
+```
+POST /v1/{organizationId}/saft/import
+```
+
+Parametrar:
+
+- **file** (multipart/form‑data): Själva SAF‑T‑filen i XML‑format.
+
+API:et validerar att filen är korrekt XML och försöker läsa kontoplanen, journalposter och kontakter. Data importeras i en transaktion och svarar med JSON som visar hur många konton, poster och kontakter som importerats samt eventuella varningar.
+
+Exempel:
+
+```bash
+curl -F "file=@/sökväg/till/saft.xml" http://localhost:8080/v1/123/saft/import
+```
+
 migrations/
 └── 2025_08_05_audit_log.sql
 ```

@@ -93,6 +93,10 @@ return function (App $app) {
     $vatRoutes = require __DIR__ . '/vatRoutes.php';
     $vatRoutes($app);
 
+    // Ladda rutter för SAF‑T import
+    $saftImportRoutes = require __DIR__ . '/saftImportRoutes.php';
+    $saftImportRoutes($app);
+
         // Lägg till global JSON-felhanterare
         $app->add($container->get(\App\Middleware\JsonErrorMiddleware::class));
 
