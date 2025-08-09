@@ -13,24 +13,24 @@ This file lists remaining tasks to make Invoicemate fully compliant with the Dan
 
 ### Dataintegritet och säkerhet
 
-*Pågående:* En enklare audit-logg skrivs vid bokning av fakturor, manuella- och inköpsverifikationer. Fullständig audit-trail för alla ändringar och användarspecifikation saknas fortfarande.
+*Klart:* Audit‑logik med triggers har införts för alla centrala tabeller (invoice, manual_voucher, purchase_voucher, entries, contacts och users).  Varje INSERT/UPDATE/DELETE loggas med organisation och användare.
 
-- [ ] Implementera en fullständig ändringslogg (audit trail) som loggar alla INSERT/UPDATE/DELETE i relevanta tabeller.
-- [ ] Införa användar- och rollhantering med persistent `users`‑tabell och dynamiska roller.
+- [x] Implementera en fullständig ändringslogg (audit trail) som loggar alla INSERT/UPDATE/DELETE i relevanta tabeller.
+- [x] Införa användar- och rollhantering med persistent `users`‑tabell och dynamiska roller.
 - [x] Införa stöd för periodlåsning så att bokslut eller låsta perioder inte kan ändras.
 
 ### Backup och dataskydd
 
-*Klart:* Backup‑rutter finns nu i API:t. En admin‑endpoint tillåter backup av databasen och uppladdade filer samt gallrar gamla backupper.
+*Klart:* Backup‑rutter finns nu i API:t. En admin‑endpoint tillåter backup av databasen och uppladdade filer samt gallrar gamla backupper.  Filer och bilagor krypteras på servern med AES‑256 innan de sparas och dekrypteras vid nedladdning.
 
 - [x] Upprätta automatiska backup‑rutiner för SQLite‑databasen.
 - [x] Säkerhetskopiera bilagor (uploads/) regelbundet, gärna till en separat lagringslösning.
-- [ ] Implementera kryptering eller annan filskyddsmekanism för känsliga filer och data.
+- [x] Implementera kryptering eller annan filskyddsmekanism för känsliga filer och data.
 
 ### SAF‑T‑export
 
 - [x] Implementera fullständig SAF‑T‑export enligt Erhvervsstyrelsens specifikation (Header, MasterFiles inkl. momskoder, GeneralLedgerEntries och SourceDocuments (SalesInvoices, PurchaseInvoices, Payments) med periodfiltrering).
-- [ ] Validera SAF‑T‑filen mot det officiella XSD‑schemat innan den levereras.
+- [x] Validera SAF‑T‑filen mot det officiella XSD‑schemat innan den levereras.
 - [ ] Tillhandahåll testfiler och automatisk generering av SAF‑T‑filer per räkenskapsår eller valfri period.
 
 ### Valfria förbättringar

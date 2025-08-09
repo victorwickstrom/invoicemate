@@ -15,5 +15,12 @@ $app = AppFactory::create();
 (require __DIR__ . '/../src/dependencies.php')($container);
 (require __DIR__ . '/../src/routes.php')($app);
 
+// Attach JWT authentication middleware globally.  This ensures that
+// all routes (except those explicitly exempted inside the middleware
+// implementation) require a valid JWT.  It must be added after the
+// routes have been registered so the middleware can access route
+// arguments.
+$app->add($container->get('auth'));
+
 // Kör appen
 $app->run();
