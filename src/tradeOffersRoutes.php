@@ -3,153 +3,322 @@
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Slim\App;
-use Psr\Container\ContainerInterface;
 
+/**
+ * Trade offer routes.
+ *
+ * This implementation introduces a versioned API path for handling offers
+ * (quotes). Offers have sequential numbers per organization and support
+ * multiple lines similar to invoices. Endpoints exist to list, create,
+ * retrieve, update and soft delete offers. It also includes an endpoint to
+ * convert an accepted offer into an invoice by copying its lines.
+ */
 return function (App $app) {
     $container = $app->getContainer();
 
-    // 📌 Hämta lista över offerter
-    $app->get('/tradeoffers', function (Request $request, Response $response) use ($container) {
-        $pdo = $container->get('db');
+    /**
+     * Helper to compute totals for trade offer lines. Accepts an array of
+     * associative arrays with keys: quantity, unit_price, discount, vat_code.
+     * Looks up VAT rate from vat_type table; if not found defaults to 0.
+     * Returns an associative array with totals: total_excl_vat, total_vatable_amount,
+     * total_non_vatable_amount, total_incl_vat, total_vat and an array of
+     * processed lines with computed fields base_amount_value, base_amount_value_incl_vat, etc.
+     */
+    $computeOfferTotals = function (PDO $pdo, array $lines) {
+        // Build VAT mapping once
+        $vatMap = [];
+        $vatRows = $pdo->query("SELECT vatCode, vatRate FROM vat_type") ?: [];
+        if ($vatRows instanceof PDOStatement) {
+            foreach ($vatRows->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $vatMap[$row['vatCode']] = (float) $row['vatRate'];
+            }
+        }
+        $totals = [
+            'total_excl_vat' => 0.0,
+            'total_vatable_amount' => 0.0,
+            'total_non_vatable_amount' => 0.0,
+            'total_incl_vat' => 0.0,
+            'total_vat' => 0.0
+        ];
+        $processed = [];
+        foreach ($lines as $line) {
+            $qty = (float) ($line['quantity'] ?? 0);
+            $unitPrice = (float) ($line['unit_price'] ?? 0);
+            $discount = isset($line['discount']) ? (float) $line['discount'] : 0;
+            $vatCode = $line['vat_code'] ?? null;
+            $vatRate = $vatMap[$vatCode] ?? 0;
+            $base = $qty * $unitPrice;
+            if ($discount > 0) {
+                $base = $base * (1 - $discount / 100.0);
+            }
+            $vatAmount = $base * $vatRate;
+            $incl = $base + $vatAmount;
+            $processed[] = [
+                'product_guid' => $line['product_guid'] ?? null,
+                'description' => $line['description'] ?? null,
+                'quantity' => $qty,
+                'unit' => $line['unit'] ?? null,
+                'discount' => $discount,
+                'vat_code' => $vatCode,
+                'vat_rate' => $vatRate,
+                'base_amount_value' => $base,
+                'base_amount_value_incl_vat' => $incl,
+                'total_amount' => $base,
+                'total_amount_incl_vat' => $incl
+            ];
+            $totals['total_excl_vat'] += $base;
+            if ($vatRate > 0) {
+                $totals['total_vatable_amount'] += $base;
+            } else {
+                $totals['total_non_vatable_amount'] += $base;
+            }
+            $totals['total_incl_vat'] += $incl;
+            $totals['total_vat'] += $vatAmount;
+        }
+        return [$totals, $processed];
+    };
 
+    // List offers for an organization (paginated)
+    $app->get('/v1/{organizationId}/offers', function (Request $request, Response $response, array $args) use ($container) {
+        $pdo = $container->get('db');
+        $orgId = $args['organizationId'];
         $queryParams = $request->getQueryParams();
-        $changesSince = $queryParams['changesSince'] ?? null;
-        $deletedOnly = isset($queryParams['deletedOnly']) ? (bool)$queryParams['deletedOnly'] : false;
-        $freeTextSearch = $queryParams['freeTextSearch'] ?? null;
         $page = isset($queryParams['page']) ? (int)$queryParams['page'] : 0;
         $pageSize = isset($queryParams['pageSize']) ? (int)$queryParams['pageSize'] : 100;
-        $sortOrder = $queryParams['sortOrder'] ?? 'DESC';
-
-        $sql = "SELECT * FROM trade_offer WHERE 1=1";
-        $params = [];
-
-        if ($changesSince) {
-            $sql .= " AND updated_at >= ?";
-            $params[] = $changesSince;
-        }
-
-        if ($deletedOnly) {
-            $sql .= " AND deleted_at IS NOT NULL";
-        } else {
-            $sql .= " AND deleted_at IS NULL";
-        }
-
-        if ($freeTextSearch) {
-            $sql .= " AND (number LIKE ? OR contact_name LIKE ? OR description LIKE ?)";
-            $params[] = "%$freeTextSearch%";
-            $params[] = "%$freeTextSearch%";
-            $params[] = "%$freeTextSearch%";
-        }
-
-        $sql .= " ORDER BY offer_date $sortOrder LIMIT ? OFFSET ?";
-        $params[] = $pageSize;
-        $params[] = $page * $pageSize;
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        $tradeOffers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $response->getBody()->write(json_encode(["collection" => $tradeOffers, "pagination" => [
-            "page" => $page,
-            "pageSize" => $pageSize,
-            "result" => count($tradeOffers)
+        $stmt = $pdo->prepare("SELECT * FROM trade_offer WHERE organization_id = :orgId AND deleted_at IS NULL ORDER BY offer_date DESC LIMIT :limit OFFSET :offset");
+        $stmt->bindValue(':orgId', $orgId, PDO::PARAM_STR);
+        $stmt->bindValue(':limit', $pageSize, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $page * $pageSize, PDO::PARAM_INT);
+        $stmt->execute();
+        $offers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $response->getBody()->write(json_encode(['collection' => $offers, 'pagination' => [
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'result' => count($offers)
         ]]));
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-    // 📌 Skapa en ny offert
-    $app->post('/tradeoffers', function (Request $request, Response $response) use ($container) {
+    // Create a new offer
+    $app->post('/v1/{organizationId}/offers', function (Request $request, Response $response, array $args) use ($container, $computeOfferTotals) {
         $pdo = $container->get('db');
+        $orgId = $args['organizationId'];
         $data = $request->getParsedBody();
-
-        $sql = "INSERT INTO trade_offer (guid, currency, language, external_reference, description, comment, 
-                offer_date, address, number, contact_name, contact_guid, show_lines_incl_vat, 
-                total_excl_vat, total_vatable_amount, total_incl_vat, total_non_vatable_amount, 
-                total_vat, invoice_template_id, status, created_at, updated_at)
-                VALUES (:guid, :currency, :language, :external_reference, :description, :comment, 
-                        :offer_date, :address, :number, :contact_name, :contact_guid, 
-                        :show_lines_incl_vat, :total_excl_vat, :total_vatable_amount, :total_incl_vat, 
-                        :total_non_vatable_amount, :total_vat, :invoice_template_id, :status, 
-                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)";
-
-        $stmt = $pdo->prepare($sql);
+        $lines = $data['lines'] ?? [];
+        // Determine next offer number per organization
+        $stmtNum = $pdo->prepare("SELECT COALESCE(MAX(number), 0) + 1 AS next FROM trade_offer WHERE organization_id = :orgId");
+        $stmtNum->execute([':orgId' => $orgId]);
+        $nextNumber = (int) $stmtNum->fetchColumn();
+        // Compute totals and processed lines
+        [$totals, $processedLines] = $computeOfferTotals($pdo, $lines);
+        $guid = $data['guid'] ?? uniqid('offer_', true);
+        // Insert offer
+        $stmt = $pdo->prepare("INSERT INTO trade_offer (guid, organization_id, currency, language, external_reference, description, comment, offer_date, address, number, contact_name, contact_guid, show_lines_incl_vat, total_excl_vat, total_vatable_amount, total_incl_vat, total_non_vatable_amount, total_vat, invoice_template_id, status, created_at, updated_at) VALUES (:guid, :orgId, :currency, :language, :externalReference, :description, :comment, :offerDate, :address, :number, :contactName, :contactGuid, :showLinesInclVat, :totalExclVat, :totalVatableAmount, :totalInclVat, :totalNonVatableAmount, :totalVat, :invoiceTemplateId, :status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
         $stmt->execute([
-            'guid' => $data['guid'] ?? uniqid(),
-            'currency' => $data['currency'] ?? 'DKK',
-            'language' => $data['language'] ?? 'da-DK',
-            'external_reference' => $data['externalReference'] ?? null,
-            'description' => $data['description'] ?? null,
-            'comment' => $data['comment'] ?? null,
-            'offer_date' => $data['date'] ?? date('Y-m-d'),
-            'address' => $data['address'] ?? null,
-            'number' => $data['number'] ?? null,
-            'contact_name' => $data['contactName'] ?? null,
-            'contact_guid' => $data['contactGuid'] ?? null,
-            'show_lines_incl_vat' => $data['showLinesInclVat'] ?? 0,
-            'total_excl_vat' => $data['totalExclVat'] ?? 0,
-            'total_vatable_amount' => $data['totalVatableAmount'] ?? 0,
-            'total_incl_vat' => $data['totalInclVat'] ?? 0,
-            'total_non_vatable_amount' => $data['totalNonVatableAmount'] ?? 0,
-            'total_vat' => $data['totalVat'] ?? 0,
-            'invoice_template_id' => $data['invoiceTemplateId'] ?? null,
-            'status' => 'Draft'
+            ':guid' => $guid,
+            ':orgId' => $orgId,
+            ':currency' => $data['currency'] ?? 'DKK',
+            ':language' => $data['language'] ?? 'da-DK',
+            ':externalReference' => $data['externalReference'] ?? null,
+            ':description' => $data['description'] ?? null,
+            ':comment' => $data['comment'] ?? null,
+            ':offerDate' => $data['date'] ?? date('Y-m-d'),
+            ':address' => $data['address'] ?? null,
+            ':number' => $nextNumber,
+            ':contactName' => $data['contactName'] ?? null,
+            ':contactGuid' => $data['contactGuid'] ?? null,
+            ':showLinesInclVat' => isset($data['showLinesInclVat']) ? (int) $data['showLinesInclVat'] : 0,
+            ':totalExclVat' => $totals['total_excl_vat'],
+            ':totalVatableAmount' => $totals['total_vatable_amount'],
+            ':totalInclVat' => $totals['total_incl_vat'],
+            ':totalNonVatableAmount' => $totals['total_non_vatable_amount'],
+            ':totalVat' => $totals['total_vat'],
+            ':invoiceTemplateId' => $data['invoiceTemplateId'] ?? null,
+            ':status' => 'Draft'
         ]);
+        // Insert lines into trade_offer_lines
+        $stmtLine = $pdo->prepare("INSERT INTO trade_offer_lines (trade_offer_guid, product_guid, description, quantity, unit, discount, vat_code, vat_rate, base_amount_value, base_amount_value_incl_vat, total_amount, total_amount_incl_vat) VALUES (:offerGuid, :productGuid, :description, :quantity, :unit, :discount, :vatCode, :vatRate, :baseAmount, :baseAmountIncl, :totalAmount, :totalAmountIncl)");
+        foreach ($processedLines as $line) {
+            $stmtLine->execute([
+                ':offerGuid' => $guid,
+                ':productGuid' => $line['product_guid'],
+                ':description' => $line['description'],
+                ':quantity' => $line['quantity'],
+                ':unit' => $line['unit'],
+                ':discount' => $line['discount'],
+                ':vatCode' => $line['vat_code'],
+                ':vatRate' => $line['vat_rate'],
+                ':baseAmount' => $line['base_amount_value'],
+                ':baseAmountIncl' => $line['base_amount_value_incl_vat'],
+                ':totalAmount' => $line['total_amount'],
+                ':totalAmountIncl' => $line['total_amount_incl_vat']
+            ]);
+        }
+        $response->getBody()->write(json_encode([
+            'message' => 'Offer created successfully',
+            'guid' => $guid,
+            'number' => $nextNumber
+        ]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
+    });
 
-        $response->getBody()->write(json_encode(["message" => "Trade offer created successfully"]));
+    // Retrieve an offer (with lines)
+    $app->get('/v1/{organizationId}/offers/{guid}', function (Request $request, Response $response, array $args) use ($container) {
+        $pdo = $container->get('db');
+        $orgId = $args['organizationId'];
+        $guid = $args['guid'];
+        $stmt = $pdo->prepare("SELECT * FROM trade_offer WHERE organization_id = :orgId AND guid = :guid AND deleted_at IS NULL");
+        $stmt->execute([':orgId' => $orgId, ':guid' => $guid]);
+        $offer = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$offer) {
+            return $response->withStatus(404)->withHeader('Content-Type', 'application/json')
+                ->write(json_encode(['error' => 'Offer not found']));
+        }
+        // Fetch lines
+        $stmtLines = $pdo->prepare("SELECT product_guid, description, quantity, unit, discount, vat_code, vat_rate, base_amount_value, base_amount_value_incl_vat, total_amount, total_amount_incl_vat FROM trade_offer_lines WHERE trade_offer_guid = :guid");
+        $stmtLines->execute([':guid' => $guid]);
+        $lines = $stmtLines->fetchAll(PDO::FETCH_ASSOC);
+        $offer['lines'] = $lines;
+        $response->getBody()->write(json_encode($offer));
         return $response->withHeader('Content-Type', 'application/json');
     });
 
-    // 📌 Uppdatera en offert
-    $app->put('/tradeoffers/{guid}', function (Request $request, Response $response, $args) use ($container) {
+    // Update an offer (replace lines and recalc totals)
+    $app->put('/v1/{organizationId}/offers/{guid}', function (Request $request, Response $response, array $args) use ($container, $computeOfferTotals) {
         $pdo = $container->get('db');
+        $orgId = $args['organizationId'];
         $guid = $args['guid'];
         $data = $request->getParsedBody();
-
-        $sql = "UPDATE trade_offer SET 
-                    currency = :currency, language = :language, external_reference = :external_reference, 
-                    description = :description, comment = :comment, offer_date = :offer_date, 
-                    address = :address, contact_name = :contact_name, contact_guid = :contact_guid, 
-                    show_lines_incl_vat = :show_lines_incl_vat, total_excl_vat = :total_excl_vat, 
-                    total_vatable_amount = :total_vatable_amount, total_incl_vat = :total_incl_vat, 
-                    total_non_vatable_amount = :total_non_vatable_amount, total_vat = :total_vat, 
-                    invoice_template_id = :invoice_template_id, updated_at = CURRENT_TIMESTAMP
-                WHERE guid = :guid";
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute(array_merge($data, ['guid' => $guid]));
-
-        $response->getBody()->write(json_encode(["message" => "Trade offer updated successfully"]));
-        return $response->withHeader('Content-Type', 'application/json');
-    });
-
-    // 📌 Ta bort en offert
-    $app->delete('/tradeoffers/{guid}', function (Request $request, Response $response, $args) use ($container) {
-        $pdo = $container->get('db');
-        $guid = $args['guid'];
-
-        $sql = "UPDATE trade_offer SET deleted_at = CURRENT_TIMESTAMP WHERE guid = ?";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$guid]);
-
-        $response->getBody()->write(json_encode(["message" => "Trade offer deleted successfully"]));
-        return $response->withHeader('Content-Type', 'application/json');
-    });
-
-    // 📌 Hämta en specifik offert
-    $app->get('/tradeoffers/{guid}', function (Request $request, Response $response, $args) use ($container) {
-        $pdo = $container->get('db');
-        $guid = $args['guid'];
-
-        $sql = "SELECT * FROM trade_offer WHERE guid = ?";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$guid]);
-        $tradeOffer = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$tradeOffer) {
-            return $response->withStatus(404)->write(json_encode(["error" => "Trade offer not found"]));
+        $lines = $data['lines'] ?? [];
+        // Compute totals
+        [$totals, $processedLines] = $computeOfferTotals($pdo, $lines);
+        // Update offer
+        $stmt = $pdo->prepare("UPDATE trade_offer SET external_reference = :externalReference, description = :description, comment = :comment, offer_date = :offerDate, address = :address, contact_name = :contactName, contact_guid = :contactGuid, show_lines_incl_vat = :showLinesInclVat, total_excl_vat = :totalExclVat, total_vatable_amount = :totalVatableAmount, total_incl_vat = :totalInclVat, total_non_vatable_amount = :totalNonVatableAmount, total_vat = :totalVat, invoice_template_id = :invoiceTemplateId, updated_at = CURRENT_TIMESTAMP WHERE organization_id = :orgId AND guid = :guid");
+        $stmt->execute([
+            ':externalReference' => $data['externalReference'] ?? null,
+            ':description' => $data['description'] ?? null,
+            ':comment' => $data['comment'] ?? null,
+            ':offerDate' => $data['date'] ?? date('Y-m-d'),
+            ':address' => $data['address'] ?? null,
+            ':contactName' => $data['contactName'] ?? null,
+            ':contactGuid' => $data['contactGuid'] ?? null,
+            ':showLinesInclVat' => isset($data['showLinesInclVat']) ? (int) $data['showLinesInclVat'] : 0,
+            ':totalExclVat' => $totals['total_excl_vat'],
+            ':totalVatableAmount' => $totals['total_vatable_amount'],
+            ':totalInclVat' => $totals['total_incl_vat'],
+            ':totalNonVatableAmount' => $totals['total_non_vatable_amount'],
+            ':totalVat' => $totals['total_vat'],
+            ':invoiceTemplateId' => $data['invoiceTemplateId'] ?? null,
+            ':orgId' => $orgId,
+            ':guid' => $guid
+        ]);
+        // Replace lines
+        $pdo->prepare("DELETE FROM trade_offer_lines WHERE trade_offer_guid = :guid")->execute([':guid' => $guid]);
+        $stmtLine = $pdo->prepare("INSERT INTO trade_offer_lines (trade_offer_guid, product_guid, description, quantity, unit, discount, vat_code, vat_rate, base_amount_value, base_amount_value_incl_vat, total_amount, total_amount_incl_vat) VALUES (:offerGuid, :productGuid, :description, :quantity, :unit, :discount, :vatCode, :vatRate, :baseAmount, :baseAmountIncl, :totalAmount, :totalAmountIncl)");
+        foreach ($processedLines as $line) {
+            $stmtLine->execute([
+                ':offerGuid' => $guid,
+                ':productGuid' => $line['product_guid'],
+                ':description' => $line['description'],
+                ':quantity' => $line['quantity'],
+                ':unit' => $line['unit'],
+                ':discount' => $line['discount'],
+                ':vatCode' => $line['vat_code'],
+                ':vatRate' => $line['vat_rate'],
+                ':baseAmount' => $line['base_amount_value'],
+                ':baseAmountIncl' => $line['base_amount_value_incl_vat'],
+                ':totalAmount' => $line['total_amount'],
+                ':totalAmountIncl' => $line['total_amount_incl_vat']
+            ]);
         }
-
-        $response->getBody()->write(json_encode($tradeOffer));
+        $response->getBody()->write(json_encode(['message' => 'Offer updated successfully']));
         return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    // Soft delete an offer
+    $app->delete('/v1/{organizationId}/offers/{guid}', function (Request $request, Response $response, array $args) use ($container) {
+        $pdo = $container->get('db');
+        $orgId = $args['organizationId'];
+        $guid = $args['guid'];
+        $stmt = $pdo->prepare("UPDATE trade_offer SET deleted_at = CURRENT_TIMESTAMP WHERE organization_id = :orgId AND guid = :guid");
+        $stmt->execute([':orgId' => $orgId, ':guid' => $guid]);
+        $response->getBody()->write(json_encode(['message' => 'Offer deleted successfully']));
+        return $response->withHeader('Content-Type', 'application/json');
+    });
+
+    // Convert an accepted offer to an invoice
+    $app->post('/v1/{organizationId}/offers/{guid}/invoice', function (Request $request, Response $response, array $args) use ($container, $computeOfferTotals) {
+        $pdo = $container->get('db');
+        $orgId = $args['organizationId'];
+        $guid = $args['guid'];
+        // Fetch offer and lines
+        $stmtOffer = $pdo->prepare("SELECT * FROM trade_offer WHERE organization_id = :orgId AND guid = :guid AND deleted_at IS NULL");
+        $stmtOffer->execute([':orgId' => $orgId, ':guid' => $guid]);
+        $offer = $stmtOffer->fetch(PDO::FETCH_ASSOC);
+        if (!$offer) {
+            return $response->withStatus(404)->withHeader('Content-Type', 'application/json')
+                ->write(json_encode(['error' => 'Offer not found']));
+        }
+        $stmtLines = $pdo->prepare("SELECT * FROM trade_offer_lines WHERE trade_offer_guid = :guid");
+        $stmtLines->execute([':guid' => $guid]);
+        $lines = $stmtLines->fetchAll(PDO::FETCH_ASSOC);
+        // Convert lines to invoice format (reuse computeOfferTotals for totals)
+        [$totals, $processed] = $computeOfferTotals($pdo, $lines);
+        $invoiceGuid = uniqid('inv_', true);
+        // Determine next invoice number
+        $stmtNum = $pdo->prepare("SELECT COALESCE(MAX(number),0)+1 FROM invoice WHERE organization_id = :orgId");
+        $stmtNum->execute([':orgId' => $orgId]);
+        $nextNumber = (int) $stmtNum->fetchColumn();
+        // Insert invoice header
+        $stmtIns = $pdo->prepare("INSERT INTO invoice (guid, organization_id, currency, language, external_reference, description, comment, invoice_date, due_date, address, number, contact_name, contact_guid, show_lines_incl_vat, total_excl_vat, total_vatable_amount, total_incl_vat, total_non_vatable_amount, total_vat, invoice_template_id, status, created_at, updated_at) VALUES (:guid, :orgId, :currency, :language, :externalReference, :description, :comment, :invoiceDate, :dueDate, :address, :number, :contactName, :contactGuid, :showLinesInclVat, :totalExclVat, :totalVatableAmount, :totalInclVat, :totalNonVatableAmount, :totalVat, :invoiceTemplateId, 'Draft', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+        $dueDate = date('Y-m-d', strtotime('+14 days'));
+        $stmtIns->execute([
+            ':guid' => $invoiceGuid,
+            ':orgId' => $orgId,
+            ':currency' => $offer['currency'] ?? 'DKK',
+            ':language' => $offer['language'] ?? 'da-DK',
+            ':externalReference' => $offer['external_reference'] ?? null,
+            ':description' => $offer['description'] ?? null,
+            ':comment' => $offer['comment'] ?? null,
+            ':invoiceDate' => date('Y-m-d'),
+            ':dueDate' => $dueDate,
+            ':address' => $offer['address'] ?? null,
+            ':number' => $nextNumber,
+            ':contactName' => $offer['contact_name'] ?? null,
+            ':contactGuid' => $offer['contact_guid'] ?? null,
+            ':showLinesInclVat' => $offer['show_lines_incl_vat'] ?? 0,
+            ':totalExclVat' => $totals['total_excl_vat'],
+            ':totalVatableAmount' => $totals['total_vatable_amount'],
+            ':totalInclVat' => $totals['total_incl_vat'],
+            ':totalNonVatableAmount' => $totals['total_non_vatable_amount'],
+            ':totalVat' => $totals['total_vat'],
+            ':invoiceTemplateId' => $offer['invoice_template_id'] ?? null
+        ]);
+        // Insert invoice lines
+        $stmtLine = $pdo->prepare("INSERT INTO invoice_lines (invoice_guid, product_guid, description, quantity, unit, discount, vat_code, vat_rate, base_amount_value, base_amount_value_incl_vat, total_amount, total_amount_incl_vat) VALUES (:invoiceGuid, :productGuid, :description, :quantity, :unit, :discount, :vatCode, :vatRate, :baseAmount, :baseAmountIncl, :totalAmount, :totalAmountIncl)");
+        foreach ($processed as $line) {
+            $stmtLine->execute([
+                ':invoiceGuid' => $invoiceGuid,
+                ':productGuid' => $line['product_guid'],
+                ':description' => $line['description'],
+                ':quantity' => $line['quantity'],
+                ':unit' => $line['unit'],
+                ':discount' => $line['discount'],
+                ':vatCode' => $line['vat_code'],
+                ':vatRate' => $line['vat_rate'],
+                ':baseAmount' => $line['base_amount_value'],
+                ':baseAmountIncl' => $line['base_amount_value_incl_vat'],
+                ':totalAmount' => $line['total_amount'],
+                ':totalAmountIncl' => $line['total_amount_incl_vat']
+            ]);
+        }
+        // Update offer status
+        $pdo->prepare("UPDATE trade_offer SET status = 'Invoiced' WHERE organization_id = :orgId AND guid = :guid")->execute([':orgId' => $orgId, ':guid' => $guid]);
+        $response->getBody()->write(json_encode([
+            'message' => 'Offer converted to invoice successfully',
+            'invoice_guid' => $invoiceGuid,
+            'invoice_number' => $nextNumber
+        ]));
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
     });
 };
