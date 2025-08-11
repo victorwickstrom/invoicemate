@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# Backup script for Invoicemate. Creates a vacuum copy of the
+# SQLite database and zips the uploads directory.
+#
+set -e
+
+BACKUPS_DIR="$(dirname "$0")/../backups"
+DATA_DIR="$(dirname "$0")/../data"
+UPLOADS_DIR="$(dirname "$0")/../uploads"
+DB_PATH="$DATA_DIR/database.sqlite"
+
+mkdir -p "$BACKUPS_DIR"
+timestamp="$(date +%Y%m%d_%H%M%S)"
+
+db_backup="db_${timestamp}.sqlite"
+uploads_backup="uploads_${timestamp}.zip"
+
+sqlite3 "$DB_PATH" "VACUUM INTO '$BACKUPS_DIR/$db_backup'"
+
+cd "$UPLOADS_DIR"
+zip -r "$BACKUPS_DIR/$uploads_backup" .
+
+# Retain only last 10 backups
+ls -1t "$BACKUPS_DIR"/db_*.sqlite | tail -n +11 | xargs -r rm --
+ls -1t "$BACKUPS_DIR"/uploads_*.zip | tail -n +11 | xargs -r rm --
+
+echo "DB backup: $db_backup"
+echo "Uploads backup: $uploads_backup"

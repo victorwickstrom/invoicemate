@@ -1,42 +1,45 @@
 <?php
-declare(strict_types=1);
-
-namespace App\Middleware;
+namespace Invoicemate\Middleware;
 
 use Psr\Http\Message\ServerRequestInterface as Request;
-use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use Psr\Http\Message\ResponseInterface;
+use Slim\Psr7\Factory\ResponseFactory;
 
 /**
- * RoleMiddleware checks that the authenticated user has at least one of the
- * allowed roles. It expects a previous middleware (e.g., JwtAuthMiddleware)
- * to have attached a `user` attribute on the request containing roles.
+ * Middleware enforcing that the authenticated user has one of the given roles.
  */
 class RoleMiddleware implements MiddlewareInterface
 {
-    /**
-     * @var array List of allowed roles
-     */
-    private $allowedRoles;
+    private array $roles;
+    private ResponseFactory $responseFactory;
 
-    public function __construct(array $allowedRoles)
+    public function __construct(array $roles, ResponseFactory $responseFactory)
     {
-        $this->allowedRoles = $allowedRoles;
+        $this->roles = $roles;
+        $this->responseFactory = $responseFactory;
     }
 
-    public function process(Request $request, RequestHandlerInterface $handler): Response
+    public function process(Request $request, RequestHandlerInterface $handler): ResponseInterface
     {
-        $user = $request->getAttribute('user');
-        $roles = $user['roles'] ?? [];
-
-        // If no roles or no intersection with allowed roles, deny access
-        if (empty($roles) || empty(array_intersect($roles, $this->allowedRoles))) {
-            $response = new \Slim\Psr7\Response();
-            $response->getBody()->write(json_encode(['error' => 'Forbidden: insufficient role']));
-            return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+        $claims = $request->getAttribute('user');
+        if (!is_array($claims) || !isset($claims['roles'])) {
+            return $this->unauthorized('Missing roles');
         }
+        $userRoles = array_map('trim', explode(',', $claims['roles']));
+        foreach ($this->roles as $role) {
+            if (in_array($role, $userRoles, true)) {
+                return $handler->handle($request);
+            }
+        }
+        return $this->unauthorized('Insufficient permissions');
+    }
 
-        return $handler->handle($request);
+    private function unauthorized(string $message): ResponseInterface
+    {
+        $response = $this->responseFactory->createResponse(403);
+        $response->getBody()->write(json_encode(['error' => $message]));
+        return $response->withHeader('Content-Type', 'application/json');
     }
 }
