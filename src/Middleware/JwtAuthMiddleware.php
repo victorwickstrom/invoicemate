@@ -4,76 +4,71 @@ declare(strict_types=1);
 namespace App\Middleware;
 
 use App\AuthService;
+use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface as Request;
-use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use Slim\Psr7\Factory\ResponseFactory;
 
 /**
- * JwtAuthMiddleware inspects the incoming request for a Bearer token,
- * validates it using the AuthService and, on success, attaches the
- * resulting user payload to the request under the attribute key
- * `user`.  If validation fails and the route is not exempted (such as
- * the login or user creation endpoints), a 401 response is returned.
- * Additionally the middleware checks that the organizationId in the
- * token payload matches the {organizationId} route parameter when
- * present, returning a 403 error on mismatch.  Exempted routes
- * (login and user creation) bypass authentication entirely.
+ * JwtAuthMiddleware authenticates incoming requests using bearer tokens.
+ *
+ * It looks for an Authorization header starting with "Bearer" and delegates
+ * validation to the injected AuthService.  If the token is valid the
+ * decoded claims are attached to the request as the `user` attribute.  It
+ * also verifies that the organisation id embedded in the token matches the
+ * route parameter {organizationId} if present to prevent cross-org access.
  */
 class JwtAuthMiddleware implements MiddlewareInterface
 {
-    /**
-     * @var AuthService
-     */
-    private $authService;
+    private AuthService $authService;
+    private ResponseFactory $responseFactory;
 
     public function __construct(AuthService $authService)
     {
         $this->authService = $authService;
+        $this->responseFactory = new ResponseFactory();
     }
 
-    public function process(Request $request, RequestHandlerInterface $handler): Response
+    public function process(Request $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $path   = $request->getUri()->getPath();
         $method = strtoupper($request->getMethod());
-        // Define a set of paths that do not require authentication.  The
-        // login endpoint and user creation endpoint are publicly
-        // accessible so that users may obtain a token and administrators
-        // may create new accounts.
-        $exemptPaths = [
+        // Endpoints that do not require authentication
+        $exempt = [
             '/login',
         ];
-        // Bypass JWT validation for POST to /v1/{organizationId}/users
+        // Allow user creation without authentication so the first admin can be created
         if ($method === 'POST' && preg_match('#^/v1/[^/]+/users$#', $path)) {
             return $handler->handle($request);
         }
-        if (in_array($path, $exemptPaths, true)) {
+        if (in_array($path, $exempt, true)) {
             return $handler->handle($request);
         }
         $authHeader = $request->getHeaderLine('Authorization');
         if (!$authHeader || stripos($authHeader, 'Bearer ') !== 0) {
-            $response = new \Slim\Psr7\Response();
-            $response->getBody()->write(json_encode(['error' => 'Missing or invalid Authorization header']));
-            return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            $resp = $this->responseFactory->createResponse(401);
+            $resp->getBody()->write(json_encode(['error' => 'Missing or invalid Authorization header']));
+            return $resp->withHeader('Content-Type', 'application/json');
         }
         $token = trim(substr($authHeader, 7));
         $payload = $this->authService->validateToken($token);
         if (!$payload) {
-            $response = new \Slim\Psr7\Response();
-            $response->getBody()->write(json_encode(['error' => 'Invalid or expired token']));
-            return $response->withStatus(401)->withHeader('Content-Type', 'application/json');
+            $resp = $this->responseFactory->createResponse(401);
+            $resp->getBody()->write(json_encode(['error' => 'Invalid or expired token']));
+            return $resp->withHeader('Content-Type', 'application/json');
         }
-        // Check organizationId in route
+        // If the route contains an organisationId parameter, ensure it matches the token
         $route = $request->getAttribute('route');
         if ($route) {
             $args = $route->getArguments();
-            if (isset($args['organizationId']) && (string) $args['organizationId'] !== (string) ($payload['organization_id'] ?? '')) {
-                $response = new \Slim\Psr7\Response();
-                $response->getBody()->write(json_encode(['error' => 'Forbidden: organization mismatch']));
-                return $response->withStatus(403)->withHeader('Content-Type', 'application/json');
+            if (isset($args['organizationId']) && (string)$args['organizationId'] !== (string)($payload['organization_id'] ?? '')) {
+                $resp = $this->responseFactory->createResponse(403);
+                $resp->getBody()->write(json_encode(['error' => 'Forbidden: organization mismatch']));
+                return $resp->withHeader('Content-Type', 'application/json');
             }
         }
-        // Attach user details to request
+        // Attach user claims to request
         $request = $request->withAttribute('user', [
             'user_id'         => $payload['user_id'],
             'organization_id' => $payload['organization_id'],

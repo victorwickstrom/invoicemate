@@ -1,6 +1,6 @@
 {
     "name": "victorwickstrom/invoicemate",
-    "description": "Invoicemate accounting system",
+    "description": "Invoicemate accounting system with enhanced organisation, user and webhook support",
     "type": "project",
     "require": {
         "php": ">=8.0",
@@ -8,11 +8,16 @@
         "slim/psr7": "^1.6",
         "php-di/php-di": "^6.3",
         "monolog/monolog": "^3.3",
-        "dompdf/dompdf": "^2.0"
+        "dompdf/dompdf": "^2.0",
+        "firebase/php-jwt": "^6.10",
+        "ramsey/uuid": "^4.7",
+        "phpmailer/phpmailer": "^6.8",
+        "guzzlehttp/guzzle": "^7.8"
     },
     "autoload": {
         "psr-4": {
-            "Invoicemate\\": "src/"
+            "Invoicemate\\": "src/",
+            "App\\": "src/"
         }
     }
 }

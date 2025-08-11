@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+
 require __DIR__ . '/vendor/autoload.php';
 
 use Slim\App;
@@ -7,21 +9,23 @@ use Slim\App;
 if (file_exists(__DIR__ . '/.env')) {
     $lines = file(__DIR__ . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     foreach ($lines as $line) {
-        if (strpos(trim($line), '#') === 0) continue;
+        if (strpos(trim($line), '#') === 0) {
+            continue;
+        }
         [$name, $value] = explode('=', $line, 2);
         $_ENV[$name] = $value;
     }
 }
 
 // Build container
-$containerBuilder = require __DIR__ . '/dependencies.php';
-$container = $containerBuilder();
+$containerBuilder = require __DIR__ . '/src/dependencies.php';
+$container = $containerBuilder(new DI\Container());
 
 // Create Slim app
 $app = new App($container);
 
 // Register routes
-$routes = require __DIR__ . '/routes.php';
+$routes = require __DIR__ . '/src/routes.php';
 $routes($app);
 
 // Run application
