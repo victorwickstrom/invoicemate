@@ -26,6 +26,8 @@ class AuthService
      *                                environment variable `JWT_SECRET`.  A
      *                                default fallback value of "changeme" is
      *                                used if no environment variable is set.
+     *
+     * @since 1.0.0
      */
     public function __construct(?string $jwtSecret = null)
     {
@@ -36,8 +38,15 @@ class AuthService
     /**
      * Hash a plain text password using bcrypt.
      *
+     * This helper wraps PHP's {@see password_hash()} to generate a secure bcrypt hash of a
+     * user‑provided password.  The resulting hash should be stored in the database and
+     * compared against future login attempts using {@see verifyPassword()}.
+     *
      * @param string $password The raw password provided by the user.
+     *
      * @return string The bcrypt hashed password ready for storage.
+     *
+     * @since 1.0.0
      */
     public function hashPassword(string $password): string
     {
@@ -47,9 +56,16 @@ class AuthService
     /**
      * Verify a password against a bcrypt hash.
      *
-     * @param string $password The raw password supplied by the user.
-     * @param string $hash     The stored password hash.
-     * @return bool True if the password matches, otherwise false.
+     * Given a plain text password and a previously generated bcrypt hash (typically
+     * retrieved from persistent storage), this method uses {@see password_verify()}
+     * to determine whether the password corresponds to the hash.
+     *
+     * @param string $password The raw password supplied by the user attempting to authenticate.
+     * @param string $hash The stored bcrypt hash retrieved from your user database.
+     *
+     * @return bool True when the password matches the stored hash, false otherwise.
+     *
+     * @since 1.0.0
      */
     public function verifyPassword(string $password, string $hash): bool
     {
@@ -59,11 +75,19 @@ class AuthService
     /**
      * Generate a signed JWT for the given user.
      *
-     * @param int    $userId          Identifier of the user being authenticated.
-     * @param int    $organizationId  Identifier of the organisation the user belongs to.
-     * @param string $role            Role of the user (e.g. admin, user).
+     * Creates a JSON Web Token containing the user's ID, organisation ID and role.
+     * The token is issued at the current time and expires after 24 hours.  It is
+     * signed using the secret configured via {@see __construct()}.
      *
-     * @return string A signed JWT valid for 24 hours.
+     * @param int $userId Identifier of the user being authenticated.
+     * @param int $organizationId Identifier of the organisation the user belongs to.
+     * @param string $role Role of the user (e.g. `admin`, `user`).
+     *
+     * @return string A signed JWT valid for 24 hours which may be returned to the client.
+     *
+     * @throws \Exception If the JWT library encounters an error while encoding.
+     *
+     * @since 1.0.0
      */
     public function generateToken(int $userId, int $organizationId, string $role): string
     {
@@ -82,8 +106,19 @@ class AuthService
     /**
      * Validate a JWT and return the contained claims.
      *
-     * @param string $token A JWT passed by the client via the Authorization header.
-     * @return array|null The decoded payload or null if the token is invalid or expired.
+     * Decodes a JWT string and verifies its signature and expiry.  On success,
+     * an associative array containing the `user_id`, `organization_id` and `role`
+     * claims is returned.  If the token is malformed, the signature does not match or
+     * the token has expired, `null` is returned.
+     *
+     * @param string $token A JWT passed by the client via the `Authorization` header.
+     *
+     * @return array|null Associative array of claims (`user_id`, `organization_id`, `role`) or
+     *                    `null` if the token is invalid or expired.
+     *
+     * @throws \RuntimeException If the token cannot be decoded or verified.
+     *
+     * @since 1.0.0
      */
     public function validateToken(string $token): ?array
     {

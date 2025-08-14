@@ -525,6 +525,38 @@ return function ($app) {
  *   totalExclVat, totalInclVat, totalVat, totalVatableAmount,
  *   totalNonVatableAmount
  */
+/**
+ * Calculate aggregated totals for a set of invoice lines without persisting them.
+ *
+ * This helper iterates over each provided invoice line and computes the line
+ * subtotal (exclusive of VAT), VAT amount and total inclusive of VAT.  When
+ * only a VAT code is supplied the VAT percentage is looked up in the
+ * `vat_type` table.  Discounts are applied per line as a percentage.  The
+ * returned totals are rounded to two decimal places.  Missing quantities
+ * default to 1 and missing unit prices default to 0.  If both `vatRate`
+ * and `vat_code`/`vatCode` are absent the line is considered non‑vatable.
+ *
+ * @param PDO $pdo Database connection used to look up VAT rates in the
+ *     `vat_type` table when only a VAT code is provided.
+ * @param string|int $orgId Identifier of the organisation; currently unused
+ *     by this function but included for symmetry with related helpers.
+ * @param array $lines Array of associative arrays representing invoice lines.
+ *     Each element may include:
+ *       - `quantity` (float|string): quantity of items; defaults to 1.
+ *       - `unitPrice` or `base_amount_value` (float|string): unit price.
+ *       - `discount` (float|string): percentage discount (0–100).
+ *       - `vatRate` (float|string): VAT rate as a percentage (e.g. 25 for 25%).
+ *       - `vat_code` or `vatCode` (string): VAT code to look up in `vat_type`.
+ *
+ * @return array Associative array with keys:
+ *     - `totalExclVat`: sum of base amounts excluding VAT.
+ *     - `totalInclVat`: sum including VAT.
+ *     - `totalVat`: total VAT amount.
+ *     - `totalVatableAmount`: total of amounts subject to VAT.
+ *     - `totalNonVatableAmount`: total of amounts with zero VAT.
+ *
+ * @since 1.0.0
+ */
 function computeInvoiceTotals(PDO $pdo, $orgId, array $lines): array
 {
     $totalExcl = 0.0;
@@ -581,10 +613,32 @@ function computeInvoiceTotals(PDO $pdo, $orgId, array $lines): array
 }
 
 /**
- * Persist invoice lines to the invoice_lines table for a given invoice
- * GUID.  Lines passed in must match the structure used by
- * computeInvoiceTotals().  This helper resolves the account name
- * automatically from the account table when possible.
+ * Persist invoice lines to the database for a specific invoice.
+ *
+ * Inserts each line into the `invoice_lines` table after computing derived
+ * fields such as base amount, base amount including VAT, total amounts and
+ * VAT rate.  If an account number is provided the corresponding account
+ * name is looked up in the `account` table for the given organisation.
+ * Input lines should follow the same structure accepted by
+ * {@see computeInvoiceTotals()}.
+ *
+ * @param PDO $pdo PDO connection to the SQLite database.
+ * @param string|int $orgId Organisation identifier used when resolving
+ *     account names.
+ * @param string $invoiceGuid The GUID of the invoice to which the lines
+ *     belong.
+ * @param array $lines Array of invoice line items.  Each element may
+ *     include keys such as `productGuid`, `description`, `comments`,
+ *     `quantity`, `account_number`/`accountNumber`, `unit`, `discount`,
+ *     `line_type`/`lineType`, `vat_code`/`vatCode`, `vatRate`,
+ *     `base_amount_value` and `base_amount_value_incl_vat`.
+ *
+ * @return void
+ *
+ * @throws \PDOException If a database error occurs while inserting the
+ *     lines.
+ *
+ * @since 1.0.0
  */
 function persistInvoiceLines(PDO $pdo, $orgId, string $invoiceGuid, array $lines): void
 {
@@ -647,9 +701,19 @@ function persistInvoiceLines(PDO $pdo, $orgId, string $invoiceGuid, array $lines
 }
 
 /**
- * Ensure the accounting_year table has the is_locked column.  Some
- * migrations may not add this column for early installations; this
- * helper makes sure it exists before checking for locks.
+ * Ensure that the `accounting_year` table contains an `is_locked` column.
+ *
+ * Some early installations may lack this column due to incomplete
+ * migrations.  This helper introspects the table schema using PRAGMA
+ * `table_info` and conditionally adds the column with a default value of 0
+ * if it is missing.  The schema alteration is performed via `ALTER TABLE`.
+ *
+ * @param PDO $pdo Database connection used to query and modify the
+ *     `accounting_year` table.
+ *
+ * @return void
+ *
+ * @since 1.0.0
  */
 function ensureAccountingYearHasLockColumn(PDO $pdo): void
 {
@@ -665,8 +729,19 @@ function ensureAccountingYearHasLockColumn(PDO $pdo): void
 }
 
 /**
- * Ensure the credit_note table has an organization_id column.  If it
- * does not exist the column will be added with a default of NULL.
+ * Ensure that the `credit_note` table contains an `organization_id` column.
+ *
+ * Some versions of the schema may lack the `organization_id` column on the
+ * `credit_note` table.  This helper examines the table metadata and adds the
+ * missing column with NULL default values if needed.  Existing rows will
+ * remain unaffected.
+ *
+ * @param PDO $pdo Database connection used to query and modify the
+ *     `credit_note` table.
+ *
+ * @return void
+ *
+ * @since 1.0.0
  */
 function ensureCreditNoteHasOrgColumn(PDO $pdo): void
 {

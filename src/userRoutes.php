@@ -30,6 +30,34 @@ return function (App $app) {
      * scoped per organisation to allow the same username to exist in different
      * organisations.  Passwords must be at least 8 characters long and contain
      * both letters and numbers.
+     *
+     * @param Request  $request  PSR-7 request containing a JSON body with
+     *     `username` (string), `password` (string) and optional `role`
+     *     ("admin", "user" or "accountant").  Missing or invalid values will
+     *     result in a 400 response.
+     * @param Response $response PSR-7 response used to return JSON data to the client.
+     * @param array    $args     Route parameters with at least `organizationId`
+     *     (integer) identifying the organisation to which the user should be added.
+     *
+     * @return Response Returns a JSON response containing the new user's
+     *     `id`, `username` and `role` on success.  HTTP 201 is returned on
+     *     success; HTTP 400 on invalid input; HTTP 403 if the caller lacks
+     *     admin privileges when additional users exist.
+     *
+     * @throws \PDOException If a database error occurs while inserting the
+     *     user or writing audit log entries.
+     *
+     * @api
+     * @since 1.0.0
+     *
+     * @example
+     * ```json
+     * {
+     *   "username": "jdoe",
+     *   "password": "Pa55word123",
+     *   "role": "admin"
+     * }
+     * ```
      */
     $app->post('/v1/{organizationId}/users', function (Request $request, Response $response, array $args) use ($container) {
         /** @var \PDO $pdo */
@@ -102,12 +130,40 @@ return function (App $app) {
      *
      * PUT /v1/{organizationId}/users/{id}
      *
-     * Only administrators may update users.  The organisation of the user being
-     * updated must match the organisation in the URL to prevent cross-org
-     * modification.  The request body may include a new role and/or new
-     * password.  Password changes trigger a re-hash; roles are validated
-     * against a whitelist.  If the password is omitted it will not be
-     * changed.
+     * Only administrators may update users.  The organisation of the user
+     * being updated must match the organisation in the URL to prevent
+     * cross‑org modification.  The request body may include a new role
+     * and/or a new password.  Password changes trigger a re‑hash; roles
+     * are validated against the allowed values `admin`, `user` and
+     * `accountant`.  If both fields are omitted no update will occur.
+     *
+     * @param Request  $request  PSR-7 request containing a JSON body with
+     *     optional `role` (string) and `password` (string).  Both fields
+     *     are validated for correctness; invalid values cause a 400 response.
+     * @param Response $response Response object used to write JSON
+     *     responses.
+     * @param array    $args     Route parameters including `organizationId`
+     *     (integer) and `id` (integer) identifying the user to update.
+     *
+     * @return Response A JSON response with a message on success.
+     *     Returns HTTP 200 with `{ "message": "User updated successfully" }` on
+     *     success, HTTP 400 for invalid input or no updatable fields,
+     *     HTTP 403 if the caller is not an admin, and HTTP 404 if the user
+     *     does not exist in the given organisation.
+     *
+     * @throws \PDOException If a database error occurs during the update
+     *     or audit logging.
+     *
+     * @api
+     * @since 1.0.0
+     *
+     * @example
+     * ```json
+     * {
+     *   "role": "accountant",
+     *   "password": "NewPa55word"
+     * }
+     * ```
      */
     $app->put('/v1/{organizationId}/users/{id}', function (Request $request, Response $response, array $args) use ($container) {
         /** @var \PDO $pdo */
@@ -188,6 +244,30 @@ return function (App $app) {
      * The login route remains without a `/v1` prefix for backwards
      * compatibility.  It validates provided credentials and issues a
      * JWT containing the user id, organisation id and role.
+     *
+     * @param Request  $request  PSR-7 request containing a JSON payload with
+     *     `username` (string) and `password` (string).  Both fields are
+     *     required; missing fields result in a 400 response.
+     * @param Response $response Response object used to write the JSON
+     *     response.
+     *
+     * @return Response Returns HTTP 200 with a JSON body containing the JWT
+     *     (`token`) and user identifiers on successful authentication.
+     *     Returns HTTP 400 when credentials are missing and HTTP 401 when
+     *     credentials are invalid.
+     *
+     * @throws \PDOException If a database error occurs while retrieving the user.
+     *
+     * @api
+     * @since 1.0.0
+     *
+     * @example
+     * ```json
+     * {
+     *   "username": "jdoe",
+     *   "password": "Pa55word123"
+     * }
+     * ```
      */
     $app->post('/login', function (Request $request, Response $response) use ($container) {
         /** @var \PDO $pdo */
